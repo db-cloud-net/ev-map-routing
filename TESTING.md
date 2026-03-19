@@ -153,9 +153,9 @@ Use this flow when running web/API on Windows Node while driving QA from WSL/bro
    - `cmd.exe /c "netstat -ano | findstr :3001"`
    - `cmd.exe /c "taskkill /PID <pid> /F"` (if needed)
 2. Start API with explicit CORS origin:
-   - `cmd.exe /c "cd /d C:\Users\david\Dev\Projects\Travel-Routing && set PORT=3001 && set CORS_ORIGIN=http://172.22.16.1:3000 && C:\Progra~1\nodejs\node.exe api\dist\api\src\server.js"`
+   - `cmd.exe /c "cd /d C:\Users\david\Dev\Projects\Travel-Routing && set PORT=3001&& set CORS_ORIGIN=http://172.22.16.1:3000&& C:\Progra~1\nodejs\node.exe api\dist\api\src\server.js"`
 3. Build web with explicit API base:
-   - `cmd.exe /c "cd /d C:\Users\david\Dev\Projects\Travel-Routing && set NEXT_PUBLIC_API_BASE=http://172.22.16.1:3001 && npm -w web run build"`
+   - `cmd.exe /c "cd /d C:\Users\david\Dev\Projects\Travel-Routing && set NEXT_PUBLIC_API_BASE=http://172.22.16.1:3001&& npm -w web run build"`
 4. Start web in production mode:
    - `cmd.exe /c "cd /d C:\Users\david\Dev\Projects\Travel-Routing && npm -w web run start -- -p 3000"`
 5. Verify from WSL:
@@ -167,6 +167,27 @@ Notes:
 - Prefer `next build` + `next start` for QA stability. `next dev` can hang or produce inconsistent chunk state during repeated stashing/restarts.
 - In WSL, use the Windows gateway (`172.22.16.1`) rather than `localhost` for browser QA routes.
 - Always pin `NEXT_PUBLIC_API_BASE` and `CORS_ORIGIN` during QA runs; do not rely on implicit defaults.
+- In `cmd.exe`, do not put a space before `&&` after `set VAR=...`; that trailing space becomes part of the env value.
+
+### Browse runtime fallback (when `browse.exe` only prints "Starting server...")
+
+If packaged `browse.exe` cannot maintain state in WSL, run the source CLI directly with Bun:
+
+```bash
+export LD_LIBRARY_PATH="/home/david/playwright-libs/full/usr/lib/x86_64-linux-gnu"
+cd "/mnt/c/Users/david/.cursor/skills/gstack"
+bun run browse/src/cli.ts goto http://172.22.16.1:3000/map
+bun run browse/src/cli.ts snapshot -i -a -o /tmp/qa-map-before.png
+bun run browse/src/cli.ts click @e3
+sleep 8
+bun run browse/src/cli.ts snapshot -i -a -o /tmp/qa-map-after.png
+bun run browse/src/cli.ts text -o /tmp/qa-map-after.txt
+```
+
+Important:
+
+- `browse/src/cli.ts wait` expects a selector or page event (for example `--networkidle`), not milliseconds. Use shell `sleep` for fixed delays.
+- `snapshot -o` is sandboxed; write outputs to `/tmp` or inside the gstack skill directory.
 
 ---
 

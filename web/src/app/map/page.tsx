@@ -15,9 +15,14 @@ export default function MapPage() {
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<PlanTripResponse | null>(null);
 
-  // `NEXT_PUBLIC_API_BASE` is optional; default to local API for dev.
+  // `NEXT_PUBLIC_API_BASE` is optional; default to current host for WSL/Windows cross-host dev.
   const apiBase = useMemo(
-    () => process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:3001",
+    () => {
+      const fromEnv = process.env.NEXT_PUBLIC_API_BASE?.trim();
+      if (fromEnv) return fromEnv;
+      if (typeof window !== "undefined") return `http://${window.location.hostname}:3001`;
+      return "http://localhost:3001";
+    },
     []
   );
 
