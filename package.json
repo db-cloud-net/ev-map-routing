@@ -1,0 +1,14 @@
+{
+  "name": "ev-map-routing",
+  "private": true,
+  "workspaces": [
+    "web",
+    "api"
+  ],
+  "scripts": {
+    "dev": "npm -w api run dev",
+    "dev:web": "npm -w web run dev",
+    "build": "npm -w api run build && npm -w web run build"
+  }
+}
+

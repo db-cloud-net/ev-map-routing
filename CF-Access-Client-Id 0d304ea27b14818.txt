@@ -1,0 +1,9 @@
+CF-Access-Client-Id: 0d304ea27b14818ce7fc32156d081035.access
+
+CF-Access-Client-Secret: ef1e8023d3cbe7a91e1f095769890fd395d6ad0becc1e785fd1da8a1f5463f3f
+
+cursor-git in cloudflare
+
+synology-git 16bb12ab205f6e3dbc9c553a27ce2060d03f0994
+git clone http://davebeuning:16bb12ab205f6e3dbc9c553a27ce2060d03f0994@192.168.86.38:3000/davebeuning/Infrastructure.git
+
