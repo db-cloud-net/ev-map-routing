@@ -224,7 +224,10 @@ export default function MapPage() {
             <ol style={{ marginTop: 10 }}>
               {plan.stops.map((s) => (
                 <li key={s.id}>
-                  <strong>{s.type}</strong> — {s.name}
+                  <strong>{s.type}</strong> —{" "}
+                  {s.type === "sleep" && (s.meta as any)?.chargerFound
+                    ? `${s.name} (EV charger: ${(s.meta as any)?.chargerName ?? "nearby"})`
+                    : s.name}
                 </li>
               ))}
             </ol>
@@ -244,7 +247,7 @@ export default function MapPage() {
                 travelMin?: number;
                 chargeMin?: number;
               };
-              type SleepStep = { kind: "sleep"; day: number; hotelName: string };
+              type SleepStep = { kind: "sleep"; day: number; hotelName: string; chargerName?: string };
               const steps: Array<DriveStep | SleepStep> = [];
 
               const countPriorSleeps = (idx: number) => {
@@ -261,7 +264,12 @@ export default function MapPage() {
                 const day = 1 + countPriorSleeps(i);
 
                 if (to.type === "sleep") {
-                  steps.push({ kind: "sleep", day, hotelName: to.name });
+                  steps.push({
+                    kind: "sleep",
+                    day,
+                    hotelName: to.name,
+                    chargerName: (to.meta as any)?.chargerName
+                  });
                   continue;
                 }
 
@@ -294,6 +302,7 @@ export default function MapPage() {
                         {s.kind === "sleep" ? (
                           <div>
                             Sleep: {s.hotelName} (8h)
+                            {s.chargerName ? ` + Charge: ${s.chargerName}` : null}
                           </div>
                         ) : (
                           <div>

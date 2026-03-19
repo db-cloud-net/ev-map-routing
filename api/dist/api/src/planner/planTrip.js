@@ -31,6 +31,7 @@ async function planTrip(input) {
         const overnightHotelRadiusMeters = Number(process.env.OVERNIGHT_HOTEL_RADIUS_METERS ?? String(hotelRadiusMeters));
         const overnightHotelRadiusYards = Math.round(overnightHotelRadiusMeters / 0.9144);
         const hotelCache = new Map();
+        const hotelChargerCache = new Map();
         // 1) Geocode.
         const startCoords = await (0, geocode_1.geocodeTextToLatLng)(input.start);
         const endCoords = await (0, geocode_1.geocodeTextToLatLng)(input.end);
@@ -437,6 +438,53 @@ async function planTrip(input) {
                     // Overpass failure degrades to charging-only (no hotel stop).
                 }
             }
+            // Soft preference: if we found a Holiday Inn Express `sleep` stop,
+            // also try to find a nearby EV charger so the same stop can
+            // represent "charging + sleeping together".
+            //
+            // This is intentionally non-fatal: missing chargers should not
+            // break the overnight/hotel insertion invariants.
+            let sleepChargerMeta = undefined;
+            if (sleepStop) {
+                const chargerRadiusMiles = hotelRadiusMeters / 1609.34;
+                const cacheKey = `${sleepStop.coords.lat.toFixed(4)}:${sleepStop.coords.lon.toFixed(4)}`;
+                try {
+                    let chargersAtHotel = hotelChargerCache.get(cacheKey);
+                    if (!chargersAtHotel) {
+                        chargersAtHotel = includeAllElectricChargers
+                            ? await (0, nrelClient_1.fetchElectricChargersNearPoint)(sleepStop.coords, chargerRadiusMiles)
+                            : await (0, nrelClient_1.fetchDcFastChargersNearPoint)(sleepStop.coords, chargerRadiusMiles);
+                        hotelChargerCache.set(cacheKey, chargersAtHotel);
+                    }
+                    if (chargersAtHotel.length) {
+                        // Choose the closest charger to the hotel coords.
+                        let best = chargersAtHotel[0];
+                        let bestD = Infinity;
+                        for (const c of chargersAtHotel) {
+                            const d = (0, geo_1.haversineMiles)(sleepStop.coords, c.coords);
+                            if (d < bestD) {
+                                bestD = d;
+                                best = c;
+                            }
+                        }
+                        sleepChargerMeta = {
+                            chargerFound: true,
+                            chargerId: String(best.id),
+                            chargerName: best.name,
+                            chargerMaxPowerKw: best.maxPowerKw,
+                            chargerLat: best.coords.lat,
+                            chargerLon: best.coords.lon
+                        };
+                    }
+                    else {
+                        sleepChargerMeta = { chargerFound: false };
+                    }
+                }
+                catch {
+                    // Overpass/NREL failures degrade to sleep-without-charger.
+                    sleepChargerMeta = { chargerFound: false };
+                }
+            }
             sleepTimeMinutesTotal += sleepMinutes;
             if (sleepStop) {
                 overallStops.push({
@@ -444,7 +492,8 @@ async function planTrip(input) {
                     type: "sleep",
                     name: sleepStop.name,
                     coords: sleepStop.coords,
-                    etaMinutesFromStart: sleepStop.etaMinutesFromStart
+                    etaMinutesFromStart: sleepStop.etaMinutesFromStart,
+                    meta: sleepChargerMeta
                 });
                 // Connector leg for map continuity; real timing is modeled as fixed 8h sleep.
                 overallLegs.push({

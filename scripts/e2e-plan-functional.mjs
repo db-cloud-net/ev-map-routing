@@ -192,11 +192,18 @@ async function main() {
         const sleepStops = json.stops.filter((s) => s.type === "sleep");
         const chargeStops = json.stops.filter((s) => s.type === "charge");
         const hasHIE = sleepStops.some((s) => (s.name ?? "").includes("Holiday Inn Express"));
+        const sleepChargerFoundCount = sleepStops.reduce(
+          (sum, s) => sum + (s.meta?.chargerFound ? 1 : 0),
+          0
+        );
+
+        console.log(
+          `Hotel charger preference found on ${sleepChargerFoundCount} sleep stop(s) (sleepStops=${sleepStops.length}).`
+        );
 
         assert(chargeStops.length >= 1, "expected at least one charge stop");
         assert(sleepStops.length >= 1, `expected >=1 sleep stop; got ${sleepStops.length}`);
         assert(hasHIE, "expected sleep stop to include Holiday Inn Express name");
-
         assert((json.totals?.overnightStopsCount ?? 0) >= 1, "expected overnightStopsCount>=1");
       }
     },
