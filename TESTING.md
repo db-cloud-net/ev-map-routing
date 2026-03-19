@@ -23,6 +23,13 @@ Do **not** commit `.env` to git.
 
 For non-secret QA defaults, prefer documenting them in this file and/or using the runner script env overrides.
 
+**Planner timeouts (optional)**
+
+| Variable | Default | Role |
+|----------|---------|------|
+| `PLAN_TOTAL_TIMEOUT_MS` | `120000` | API: hard cap on `planTrip` wall time; responds with HTTP **408** + `debug.reason: planner_timeout` when exceeded |
+| `NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS` | `130000` | Web: `fetch` abort so the UI does not hang past ~client limit (should be ≥ API cap + slack) |
+
 ---
 
 ## 1) Repo hygiene requirement (for gstack `/qa`)

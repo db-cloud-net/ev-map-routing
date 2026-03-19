@@ -2,6 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { planTrip } from "./planner/planTrip";
+import { withTimeout } from "./planTimeout";
 import path from "path";
 import { existsSync } from "fs";
 
@@ -77,12 +78,17 @@ app.post("/plan", async (req, res) => {
         end: parsed.end
       })
     );
-    const result = await planTrip({
-      requestId,
-      start: parsed.start,
-      end: parsed.end,
-      responseVersion,
-    });
+    const totalMs = Number(process.env.PLAN_TOTAL_TIMEOUT_MS ?? 120000);
+    const result = await withTimeout(
+      planTrip({
+        requestId,
+        start: parsed.start,
+        end: parsed.end,
+        responseVersion,
+      }),
+      totalMs,
+      `Planner exceeded time limit (${totalMs}ms). Try a shorter route or retry later.`
+    );
     console.log(
       JSON.stringify({
         event: "plan_request_end",
@@ -96,24 +102,30 @@ app.post("/plan", async (req, res) => {
     );
     res.status(result.status === "ok" ? 200 : 400).json(result);
   } catch (err) {
+    const isTimeout =
+      err instanceof Error &&
+      /exceeded time limit|timed out|ECONNABORTED/i.test(err.message);
     console.log(
       JSON.stringify({
         event: "plan_request_error",
         requestId,
         responseVersion,
         durationMs: Date.now() - startedAt,
-        message: err instanceof Error ? err.message : String(err)
+        message: err instanceof Error ? err.message : String(err),
+        timeout: isTimeout
       })
     );
     const msg =
       err instanceof Error ? err.message : "Unexpected error planning trip";
-    res.status(400).json({
+    const statusCode = isTimeout ? 408 : 400;
+    res.status(statusCode).json({
       requestId,
       responseVersion,
       status: "error",
       message: msg,
       stops: [],
       legs: [],
+      debug: isTimeout ? { reason: "planner_timeout" } : undefined,
     });
   }
 });

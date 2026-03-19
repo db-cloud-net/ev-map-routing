@@ -9,6 +9,18 @@ export default function MapPage() {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
 
+  /** F1: clear route + markers immediately on replan (before async state updates). */
+  function clearMapPlanArtifacts() {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const m of markersRef.current) m.remove();
+    markersRef.current = [];
+    for (const lid of ["route-line", "route-line-halo"]) {
+      if (map.getLayer(lid)) map.removeLayer(lid);
+    }
+    if (map.getSource("route-geojson")) map.removeSource("route-geojson");
+  }
+
   const [start, setStart] = useState("Raleigh, NC");
   const [end, setEnd] = useState("Seattle, WA");
   const [loading, setLoading] = useState(false);
@@ -150,7 +162,7 @@ export default function MapPage() {
           type: "line",
           source: "route-geojson",
           layout: { "line-join": "round", "line-cap": "round" },
-          paint: { "line-color": "#0b7cff", "line-width": 3 }
+          paint: { "line-color": "#0b7cff", "line-width": 5 }
         });
       }
     }
@@ -172,28 +184,55 @@ export default function MapPage() {
     }
   }, [plan]);
 
+  function classifyPlanError(e: unknown, resp: Response | null): string {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      const ms = Number(process.env.NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS ?? 130000);
+      return `Request timed out after ${Math.round(ms / 1000)}s. Try a shorter route or retry.`;
+    }
+    if (e instanceof TypeError && /fetch|Load failed|NetworkError/i.test(String(e.message))) {
+      return "Network error: could not reach the planner API. Check that the API is running and CORS allows this origin.";
+    }
+    if (resp?.status === 408) {
+      return "The planner took too long (server time limit). Try a shorter route or retry later.";
+    }
+    if (resp?.status === 400 || resp?.status === 500 || resp?.status === 502) {
+      return e instanceof Error ? e.message : "Planning failed";
+    }
+    return e instanceof Error ? e.message : "Planning failed";
+  }
+
   async function onPlanTrip() {
+    clearMapPlanArtifacts();
     setLoading(true);
     setError(null);
     setPlan(null);
+    const clientMs = Number(process.env.NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS ?? 130000);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), clientMs);
+    let resp: Response | null = null;
     try {
-      const apiUrl = `${apiBase}/plan`;
-      const resp = await fetch(apiUrl, {
+      const apiUrl = `${apiBase.replace(/\/$/, "")}/plan`;
+      resp = await fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ start, end })
+        body: JSON.stringify({ start, end }),
+        signal: controller.signal
       });
-      const json = (await resp.json()) as PlanTripResponse;
+      let json: PlanTripResponse;
+      try {
+        json = (await resp.json()) as PlanTripResponse;
+      } catch {
+        throw new Error(`Invalid response from planner (HTTP ${resp.status}).`);
+      }
       if (!resp.ok) {
-        // Keep the full error payload so we can surface `debug` in the UI.
         setPlan(json);
-        throw new Error(json.message ?? "Planning failed");
+        throw new Error(json.message ?? `Planning failed (HTTP ${resp.status})`);
       }
       setPlan(json);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Planning failed";
-      setError(msg);
+      setError(classifyPlanError(e, resp));
     } finally {
+      window.clearTimeout(timer);
       setLoading(false);
     }
   }
@@ -258,7 +297,6 @@ export default function MapPage() {
 
             <h3 style={{ margin: "16px 0 8px 0", fontSize: 14 }}>Turn-by-turn (MVP)</h3>
             {(() => {
-              const stopById = new Map(plan.stops.map((s) => [s.id, s]));
               const legByPair = new Map(
                 plan.legs.map((l) => [`${l.fromStopId}->${l.toStopId}`, l])
               );
