@@ -34,6 +34,22 @@ export async function planTrip(input: {
       chosen?: boolean;
     }>
   };
+
+  const enablePlanRequestLogging =
+    (process.env.PLAN_LOG_REQUESTS ?? "true").toLowerCase() === "true";
+  const logEvent = (
+    event: string,
+    data: Record<string, unknown> = {}
+  ) => {
+    if (!enablePlanRequestLogging) return;
+    console.log(
+      JSON.stringify({
+        event,
+        requestId: input.requestId,
+        ...data
+      })
+    );
+  };
   try {
     const rangeMiles = Number(process.env.EV_RANGE_MILES ?? "260");
     const bufferSoc = Number(process.env.CHARGE_BUFFER_SOC ?? "0");
@@ -63,8 +79,23 @@ export async function planTrip(input: {
     >();
 
     // 1) Geocode.
+    const geoStartT0 = Date.now();
     const startCoords = await geocodeTextToLatLng(input.start);
+    logEvent("provider_geocode", {
+      provider: "nominatim",
+      which: "start",
+      query: input.start,
+      durationMs: Date.now() - geoStartT0
+    });
+
+    const geoEndT0 = Date.now();
     const endCoords = await geocodeTextToLatLng(input.end);
+    logEvent("provider_geocode", {
+      provider: "nominatim",
+      which: "end",
+      query: input.end,
+      durationMs: Date.now() - geoEndT0
+    });
 
     // 2) Fetch candidate DC fast chargers along corridor.
     // MVP "A": sample points along the Valhalla route polyline (road-based), but keep
@@ -81,14 +112,20 @@ export async function planTrip(input: {
 
     let samplePoints: LatLng[] = [];
     try {
+      const polyT0 = Date.now();
       const poly = await getRoutePolyline(startCoords, endCoords);
       samplePoints = samplePointsAlongPolyline(
         poly as { type: "LineString"; coordinates: [number, number][] },
         stepMiles,
         maxCorridorSamples
       );
+      logEvent("provider_valhalla_polyline", {
+        durationMs: Date.now() - polyT0,
+        corridorSamplesUsed: samplePoints.length
+      });
     } catch {
       // Fallback to straight-line sampling if Valhalla geometry isn't available yet.
+      const fallbackT0 = Date.now();
       const approxMiles = haversineMiles(startCoords, endCoords);
       // Ensure we still respect CORRIDOR_MAX_SAMPLE_POINTS in fallback mode,
       // otherwise charger sampling can explode into too many NREL requests.
@@ -98,6 +135,10 @@ export async function planTrip(input: {
         const t = approxSampleCount <= 1 ? 0 : i / (approxSampleCount - 1);
         samplePoints.push(interpolateLatLng(startCoords, endCoords, t));
       }
+      logEvent("provider_valhalla_polyline_fallback", {
+        durationMs: Date.now() - fallbackT0,
+        corridorSamplesUsed: samplePoints.length
+      });
     }
 
     // Ensure NREL route corridor actually includes the exact endpoints.
@@ -112,6 +153,7 @@ export async function planTrip(input: {
     }
 
     let chargers: any[] = [];
+    const nrelCorridorT0 = Date.now();
     if (useNearbyRoute && samplePoints.length >= 2) {
       chargers = await fetchDcFastChargersNearRoute(samplePoints, radiusMiles);
     } else {
@@ -125,6 +167,12 @@ export async function planTrip(input: {
       }
       chargers = Array.from(chargersById.values());
     }
+    logEvent("provider_nrel_corridor_chargers", {
+      durationMs: Date.now() - nrelCorridorT0,
+      mode: useNearbyRoute ? "nearby-route" : "nearby-point",
+      corridorSamplesUsed: samplePoints.length,
+      chargersFoundTotal: chargers.length
+    });
 
     debug.chargersFoundTotal = chargers.length;
     debug.corridorSampling = {
@@ -306,15 +354,42 @@ export async function planTrip(input: {
         const stopsToAppend = overallStops.length === 0 ? segment.stops : segment.stops.slice(1);
         overallStops = overallStops.concat(stopsToAppend);
         overallLegs = overallLegs.concat(segment.legs);
+        logEvent("overnight_check", {
+          overnightNeeded: false,
+          segmentTotalTimeMinutes: segment.totalTimeMinutes,
+          overnightThresholdMinutes
+        });
         break;
       }
 
       // Overnight needed: pick an anchor charger where cumulative time crosses the threshold.
-      const chargeCandidates = segment.stops
+      const chargeStops = segment.stops
         .map((s, idx) => ({ s, idx }))
-        .filter(
-          ({ s }) => s.type === "charge" && (s.etaMinutesFromStart ?? 0) >= overnightThresholdMinutes
-        );
+        .filter(({ s }) => s.type === "charge");
+
+      // Primary rule: anchor on a charge-stop whose ETA is already >= the overnight threshold.
+      // This matches the “time crosses threshold during charging” model.
+      const thresholdChargeCandidates = chargeStops.filter(
+        ({ s }) => (s.etaMinutesFromStart ?? 0) >= overnightThresholdMinutes
+      );
+
+      // Flakiness fix: if no charge-stop crosses the threshold (e.g. edge timing where the
+      // threshold is exceeded by a later leg), fall back to the closest charge-stop by ETA.
+      // This keeps the “sleep insertion” invariant from depending on brittle crossing points.
+      const chargeCandidates =
+        thresholdChargeCandidates.length > 0
+          ? thresholdChargeCandidates
+          : [...chargeStops].sort((a, b) => {
+              const etaA = a.s.etaMinutesFromStart ?? 0;
+              const etaB = b.s.etaMinutesFromStart ?? 0;
+              const dA = Math.abs(etaA - overnightThresholdMinutes);
+              const dB = Math.abs(etaB - overnightThresholdMinutes);
+              if (dA !== dB) return dA - dB;
+              return a.idx - b.idx;
+            });
+
+      (debug as Record<string, unknown>).overnightAnchorThresholdCrossing =
+        thresholdChargeCandidates.length > 0;
 
       const anchorCandidateLimit = Number(
         process.env.OVERNIGHT_ANCHOR_CANDIDATE_LIMIT ?? "3"
@@ -342,10 +417,17 @@ export async function planTrip(input: {
           hotels = hotelCache.get(cacheKey) ?? [];
         } else {
           try {
+            const overpassHotelsT0 = Date.now();
             hotels = await findHolidayInnExpressNearby(
               cand.s.coords,
               overnightHotelRadiusMeters
             );
+            logEvent("provider_overpass_hotels", {
+              anchorChargerId: cand.s.id,
+              radiusMeters: overnightHotelRadiusMeters,
+              durationMs: Date.now() - overpassHotelsT0,
+              hotelsFoundTotal: hotels.length
+            });
           } catch {
             hotels = [];
           }
@@ -397,6 +479,12 @@ export async function planTrip(input: {
         const stopsToAppend = overallStops.length === 0 ? segment.stops : segment.stops.slice(1);
         overallStops = overallStops.concat(stopsToAppend);
         overallLegs = overallLegs.concat(segment.legs);
+        logEvent("overnight_anchor_not_found", {
+          overnightIndex,
+          chargeStopsCount: chargeStops.length,
+          chargeCandidatesCount: chargeCandidates.length,
+          thresholdChargeCandidatesCount: thresholdChargeCandidates.length
+        });
         break;
       }
 
@@ -427,10 +515,17 @@ export async function planTrip(input: {
             hotels = hotelCache.get(cacheKey) ?? [];
           } else {
             try {
-            hotels = await findHolidayInnExpressNearby(
-              c.coords,
-              overnightHotelRadiusMeters
-            );
+              const overpassHotelsT0 = Date.now();
+              hotels = await findHolidayInnExpressNearby(
+                c.coords,
+                overnightHotelRadiusMeters
+              );
+              logEvent("provider_overpass_hotels", {
+                anchorChargerId: c.id,
+                radiusMeters: overnightHotelRadiusMeters,
+                durationMs: Date.now() - overpassHotelsT0,
+                hotelsFoundTotal: hotels.length
+              });
             } catch {
               hotels = [];
             }
@@ -484,6 +579,14 @@ export async function planTrip(input: {
         }
       }
 
+      logEvent("overnight_anchor_resolved", {
+        overnightIndex,
+        anchorStopId: anchorStop.id,
+        anchorStopEtaMinutesFromStart: anchorStop.etaMinutesFromStart,
+        hotelFound: Boolean(resolvedSelectedHotel),
+        hotelName: resolvedSelectedHotel?.name
+      });
+
       overnightStopsCount++;
 
       if (overallStops.length === 0) {
@@ -512,10 +615,17 @@ export async function planTrip(input: {
           if (hotelCache.has(cacheKey)) {
             hotels = hotelCache.get(cacheKey) ?? [];
           } else {
+            const overpassHotelsT0 = Date.now();
             hotels = await findHolidayInnExpressNearby(
               anchorStop.coords,
               overnightHotelRadiusMeters
             );
+            logEvent("provider_overpass_hotels", {
+              anchorChargerId: anchorStop.id,
+              radiusMeters: overnightHotelRadiusMeters,
+              durationMs: Date.now() - overpassHotelsT0,
+              hotelsFoundTotal: hotels.length
+            });
             hotelCache.set(cacheKey, hotels);
           }
           if (hotels.length) {
@@ -544,6 +654,12 @@ export async function planTrip(input: {
         }
       }
 
+      logEvent(sleepStop ? "sleep_stop_created" : "sleep_stop_missing", {
+        overnightIndex,
+        anchorStopId: anchorStop.id,
+        sleepName: sleepStop?.name
+      });
+
       // Soft preference: if we found a Holiday Inn Express `sleep` stop,
       // also try to find a nearby EV charger so the same stop can
       // represent "charging + sleeping together".
@@ -567,9 +683,15 @@ export async function planTrip(input: {
         try {
           let chargersAtHotel = hotelChargerCache.get(cacheKey);
           if (!chargersAtHotel) {
+            const metaFetchT0 = Date.now();
             chargersAtHotel = includeAllElectricChargers
               ? await fetchElectricChargersNearPoint(sleepStop.coords, chargerRadiusMiles)
               : await fetchDcFastChargersNearPoint(sleepStop.coords, chargerRadiusMiles);
+            logEvent("provider_nrel_hotel_chargers", {
+              durationMs: Date.now() - metaFetchT0,
+              chargerSearchMode: includeAllElectricChargers ? "electric-all" : "dc-fast",
+              chargersFoundTotal: chargersAtHotel.length
+            });
             hotelChargerCache.set(cacheKey, chargersAtHotel);
           }
 
@@ -600,6 +722,16 @@ export async function planTrip(input: {
           // Overpass/NREL failures degrade to sleep-without-charger.
           sleepChargerMeta = { chargerFound: false };
         }
+      }
+
+      if (sleepStop) {
+        logEvent("sleep_charger_meta", {
+          overnightIndex,
+          anchorStopId: anchorStop.id,
+          sleepName: sleepStop.name,
+          chargerFound: Boolean(sleepChargerMeta?.chargerFound),
+          chargerName: sleepChargerMeta?.chargerName
+        });
       }
 
       sleepTimeMinutesTotal += sleepMinutes;

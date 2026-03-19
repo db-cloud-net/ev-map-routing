@@ -20,6 +20,31 @@ dotenv.config({ path: envPath });
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
+// Allow the web frontend (Next.js on :3000) to call this API (on :3001).
+// We handle CORS preflight (OPTIONS) explicitly so browsers can POST JSON.
+app.use((req, res, next) => {
+  const allowedOrigin = process.env.CORS_ORIGIN ?? "http://localhost:3000";
+  const origin = req.headers.origin;
+
+  if (allowedOrigin === "*") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else if (origin && origin === allowedOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    // Still set a default allowed origin for dev, even if origin header is missing/mismatched.
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+  }
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+
+  next();
+});
+
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
@@ -39,17 +64,47 @@ app.post("/plan", async (req, res) => {
   const requestId =
     (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
   const responseVersion = "mvp-1";
+  const startedAt = Date.now();
 
   try {
     const parsed = planSchema.parse(req.body);
+    console.log(
+      JSON.stringify({
+        event: "plan_request_start",
+        requestId,
+        responseVersion,
+        start: parsed.start,
+        end: parsed.end
+      })
+    );
     const result = await planTrip({
       requestId,
       start: parsed.start,
       end: parsed.end,
       responseVersion,
     });
+    console.log(
+      JSON.stringify({
+        event: "plan_request_end",
+        requestId,
+        responseVersion,
+        status: result.status,
+        durationMs: Date.now() - startedAt,
+        stopsCount: result.stops?.length ?? 0,
+        overnightStopsCount: result.totals?.overnightStopsCount ?? 0
+      })
+    );
     res.status(result.status === "ok" ? 200 : 400).json(result);
   } catch (err) {
+    console.log(
+      JSON.stringify({
+        event: "plan_request_error",
+        requestId,
+        responseVersion,
+        durationMs: Date.now() - startedAt,
+        message: err instanceof Error ? err.message : String(err)
+      })
+    );
     const msg =
       err instanceof Error ? err.message : "Unexpected error planning trip";
     res.status(400).json({

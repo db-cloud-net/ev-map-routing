@@ -7,6 +7,7 @@ import type { ItineraryStop, PlanTripResponse } from "../../../../shared/types";
 export default function MapPage() {
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const markersRef = useRef<maplibregl.Marker[]>([]);
 
   const [start, setStart] = useState("Raleigh, NC");
   const [end, setEnd] = useState("Seattle, WA");
@@ -14,14 +15,18 @@ export default function MapPage() {
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<PlanTripResponse | null>(null);
 
-  const apiBase = useMemo(() => process.env.NEXT_PUBLIC_API_BASE ?? "", []);
+  // `NEXT_PUBLIC_API_BASE` is optional; default to local API for dev.
+  const apiBase = useMemo(
+    () => process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:3001",
+    []
+  );
 
   useEffect(() => {
     if (!mapEl.current) return;
     if (mapRef.current) return;
 
-    // Public demo style tiles; replace later if you have preferred tile hosting.
-    const styleUrl = "https://demotiles.maplibre.org/style.json";
+    // Basemap with readable city/highway labels.
+    const styleUrl = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json";
     const map = new maplibregl.Map({
       container: mapEl.current,
       style: styleUrl,
@@ -50,9 +55,21 @@ export default function MapPage() {
     // Markers: simplest MVP—remove any previous markers by rebuilding after each plan.
     // (In production, keep marker refs to avoid churn.)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    if (!plan) return;
+    if (!plan) {
+      for (const m of markersRef.current) m.remove();
+      markersRef.current = [];
+      return;
+    }
 
-    if (plan.stops.length === 0) return;
+    if (plan.stops.length === 0) {
+      for (const m of markersRef.current) m.remove();
+      markersRef.current = [];
+      return;
+    }
+
+    // Clear markers from previous plan render.
+    for (const m of markersRef.current) m.remove();
+    markersRef.current = [];
 
     // Fit view to stops.
     const bounds = plan.stops.reduce(
@@ -102,14 +119,14 @@ export default function MapPage() {
         type: "line",
         source: "route-geojson",
         layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#000000", "line-width": 6, "line-opacity": 0.25 }
+        paint: { "line-color": "#000000", "line-width": 10, "line-opacity": 0.22 }
       });
       map.addLayer({
         id: "route-line",
         type: "line",
         source: "route-geojson",
         layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#0b7cff", "line-width": 3 }
+        paint: { "line-color": "#0b7cff", "line-width": 5 }
       });
     } else {
       // Fallback: connect stops in order.
@@ -143,8 +160,10 @@ export default function MapPage() {
             : s.type === "sleep"
               ? "#ff8c00"
               : "#00b894"; // charge
-
-      new maplibregl.Marker({ color }).setLngLat([s.coords.lon, s.coords.lat]).addTo(map);
+      const marker = new maplibregl.Marker({ color })
+        .setLngLat([s.coords.lon, s.coords.lat])
+        .addTo(map);
+      markersRef.current.push(marker);
     }
   }, [plan]);
 
@@ -153,7 +172,7 @@ export default function MapPage() {
     setError(null);
     setPlan(null);
     try {
-      const apiUrl = apiBase ? `${apiBase}/plan` : "/plan";
+      const apiUrl = `${apiBase}/plan`;
       const resp = await fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
