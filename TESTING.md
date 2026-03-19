@@ -41,6 +41,13 @@ Also ensure build artifacts are ignored:
 - `node_modules/`
 - `.cursor/`
 
+If `web/.next` is already tracked from earlier commits, untrack it once:
+
+```bash
+git rm -r --cached web/.next
+git commit -m "Stop tracking Next.js build artifacts"
+```
+
 ---
 
 ## 2) Backend functional E2E (recommended “preflight”)
@@ -136,6 +143,30 @@ If you add/modify planning logic, preserve the invariants above or update the ru
    - Enter a known scenario
    - Click **Plan Trip**
    - Verify itinerary renders and no JS errors appear
+
+### Windows + WSL repeatable startup (recommended)
+
+Use this flow when running web/API on Windows Node while driving QA from WSL/browser tools.
+
+1. Kill stale listeners first:
+   - `cmd.exe /c "netstat -ano | findstr :3000"`
+   - `cmd.exe /c "netstat -ano | findstr :3001"`
+   - `cmd.exe /c "taskkill /PID <pid> /F"` (if needed)
+2. Start API with explicit CORS origin:
+   - `cmd.exe /c "cd /d C:\Users\david\Dev\Projects\Travel-Routing && set PORT=3001 && set CORS_ORIGIN=http://172.22.16.1:3000 && C:\Progra~1\nodejs\node.exe api\dist\api\src\server.js"`
+3. Build web with explicit API base:
+   - `cmd.exe /c "cd /d C:\Users\david\Dev\Projects\Travel-Routing && set NEXT_PUBLIC_API_BASE=http://172.22.16.1:3001 && npm -w web run build"`
+4. Start web in production mode:
+   - `cmd.exe /c "cd /d C:\Users\david\Dev\Projects\Travel-Routing && npm -w web run start -- -p 3000"`
+5. Verify from WSL:
+   - `curl -sS -m 8 -o /dev/null -w "%{http_code}\n" http://172.22.16.1:3000/map` (expect `200`)
+   - `curl -sS -m 5 -o /dev/null -w "%{http_code}\n" http://172.22.16.1:3001/health` (expect `200`)
+
+Notes:
+
+- Prefer `next build` + `next start` for QA stability. `next dev` can hang or produce inconsistent chunk state during repeated stashing/restarts.
+- In WSL, use the Windows gateway (`172.22.16.1`) rather than `localhost` for browser QA routes.
+- Always pin `NEXT_PUBLIC_API_BASE` and `CORS_ORIGIN` during QA runs; do not rely on implicit defaults.
 
 ---
 
