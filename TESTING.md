@@ -226,3 +226,18 @@ If you see intermittent failures, rely on:
 - the functional runner output
 - the `/plan` `debug.segmentsAttempted` payload
 
+---
+
+## 7) Blank map / DevTools shows `400` on `/_next/static/chunks/*.js`
+
+If the **map area stays white** and the **Network** tab shows **`400 Bad Request`** (or 404) for files like `webpack-….js` or `page-….js`, the browser is asking for chunk hashes that **don’t match** the current Next.js build (stale cache, interrupted dev server, or mixed `dev` / `build` runs).
+
+**Fix**
+
+1. Stop `npm -w web run dev` (and any `next start` on the same port).
+2. Delete the web build output: remove the `web/.next/` folder.
+3. Start dev again: `npm -w web run dev`.
+4. In the browser: hard refresh (**Ctrl+Shift+R**) or clear site data for `localhost:3000`.
+
+After chunks load with **200**, **Plan Trip** can reach the API; failures that mention the planner will show in the UI or on the `/plan` request, not on static `.js` chunks.
+
