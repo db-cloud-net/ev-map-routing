@@ -5,3 +5,4 @@ node_modules
 web/.next/
 api/dist/
 .vscode/
+.tmp-screenshot2/
