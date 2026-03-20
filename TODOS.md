@@ -76,7 +76,7 @@
 ### Local mirror architecture execution lane (architecture only)
 **What:** Execute architecture design only (no implementation yet) for the local mirror epic in dependency order.  
 **Why:** Prevents implementation thrash and locks contracts/fallback behavior before coding.  
-**Context:** This lane decomposes the local mirror epic into architecture deliverables A1-D3.  
+**Context:** This lane decomposes the local mirror epic into architecture deliverables A1-D3. **Working draft:** `docs/local-mirror-architecture.md` (fill A1→D3 in order).  
 **Effort:** L (human) -> M (CC+gstack)  
 **Priority:** P0  
 **Depends on:** None
