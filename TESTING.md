@@ -65,16 +65,30 @@ This repo includes a dependency-free functional runner:
 
 - `scripts/e2e-plan-functional.mjs`
 
-### Run it (uses current `.env`)
+### Run it (quick smoke against your already-running API)
 
 ```bash
 node scripts/e2e-plan-functional.mjs
 ```
 
-### Run it deterministically (spawns the API with per-case env overrides)
+**Important:** In this mode the runner **does not** apply each case’s `envOverrides` from `e2e-plan-functional.mjs`—only the API process’s real environment (e.g. `.env`) is used. Scenarios such as **overnight + HIE** are written with tight `EV_RANGE_MILES` / threshold overrides; without them, you may see **false failures** (e.g. “expected at least one charge stop”). Treat this command as a smoke test only unless your `.env` already matches those constraints.
+
+### Run it deterministically (recommended for QA / CI)
+
+Spawns a fresh API per case so **per-case `envOverrides` actually apply**:
 
 ```bash
 SPAWN_SERVER=true API_PORT=3001 node scripts/e2e-plan-functional.mjs
+```
+
+Use a free port if `3001` is taken by your dev server, or stop the dev API first.
+
+**PowerShell (Windows)** — set env vars separately; `set FOO=bar` is not the same as in `cmd.exe`:
+
+```powershell
+$env:SPAWN_SERVER = 'true'
+$env:API_PORT = '3002'   # or 3001 if nothing is listening there
+node scripts/e2e-plan-functional.mjs
 ```
 
 ---
