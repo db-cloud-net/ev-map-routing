@@ -12,9 +12,9 @@
 | **2A** | Thin router module | Introduce a dedicated module (e.g. `api/src/sourceRouter.ts` or `api/src/planner/sourcePolicy.ts`) that **`planTrip`** calls; **avoid** growing `planTrip.ts` with mode branches. |
 | **3A** | Storage in A1 | Choose mirror persistence (e.g. versioned files + manifest vs SQLite) inside **A1** with an explicit **boring-default** rationale for Synology/NAS. |
 | **4A** | Valhalla out of mirror v1 | This epic **does not** include snapshotting or lifecycle for Valhalla unless **D1** explicitly expands; Valhalla stays as today’s deployment/integration. |
-| **5A** | Dual-read later | **C1** dual-read/compare is **specified** in outline first; **implement** only after **local-primary + fallback** read path is working. |
+| **5A** | Dual-read later *(DRI-confirmed)* | **C1** dual-read/compare is **specified** in outline first; **implement** only after **local-primary + fallback** read path is working. |
 
-Reopen only via explicit note in this doc (date + reason).
+Reopen only via explicit note in this doc (date + reason). **5A** reaffirmed by DRI explicitly (not default-only).
 
 ## Dependency order (do not reorder without cause)
 
