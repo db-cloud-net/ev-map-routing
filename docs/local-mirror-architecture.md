@@ -4,6 +4,18 @@
 **Intent:** Architecture **before** implementation (see `TODOS.md` Phase 2 lanes A–D).  
 **DRI:** David  
 
+## Eng review decisions (locked — 2026-03-18)
+
+| # | Choice | Meaning |
+|---|--------|--------|
+| **1A** | Doc-only A1–A5 first | No mirror ingest/runtime code until **A1–A5** are written and reviewed in this file. First code PR after that: **A3** interfaces + remote adapters only. |
+| **2A** | Thin router module | Introduce a dedicated module (e.g. `api/src/sourceRouter.ts` or `api/src/planner/sourcePolicy.ts`) that **`planTrip`** calls; **avoid** growing `planTrip.ts` with mode branches. |
+| **3A** | Storage in A1 | Choose mirror persistence (e.g. versioned files + manifest vs SQLite) inside **A1** with an explicit **boring-default** rationale for Synology/NAS. |
+| **4A** | Valhalla out of mirror v1 | This epic **does not** include snapshotting or lifecycle for Valhalla unless **D1** explicitly expands; Valhalla stays as today’s deployment/integration. |
+| **5A** | Dual-read later | **C1** dual-read/compare is **specified** in outline first; **implement** only after **local-primary + fallback** read path is working. |
+
+Reopen only via explicit note in this doc (date + reason).
+
 ## Dependency order (do not reorder without cause)
 
 ```
@@ -48,7 +60,7 @@ Browser → POST /plan → planTrip.ts
                     canonical types (A1)
 ```
 
-Valhalla is already local in many deployments; this epic **centers on NREL + Overpass** mirrors unless D1 expands scope.
+**Valhalla (4A):** Often already local; **not** in mirror snapshot lifecycle for v1. Epic **centers on NREL + Overpass** mirrors unless D1 explicitly adds routing-graph artifacts.
 
 ## Sections (fill in order)
 
