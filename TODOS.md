@@ -1,6 +1,8 @@
 # TODOS
 
-## Current status (snapshot — 2026-03)
+## Current status (snapshot — **2026-03-18**)
+
+**DRI:** David *(adjust if ownership changes)*
 
 **Shipped / working in repo**
 
@@ -22,39 +24,39 @@
 ## Execution Checklist (Plan-Eng-Review)
 
 ### Phase 1 — Reliability + Frontend (Now)
-- [x] **Task:** F1 marker cleanup between plans *(clear on replan before `fetch`)*
-- [x] **Task:** F2 readable basemap labels *(Carto Voyager `styleUrl`)*
-- [x] **Task:** F3 highlighted selected route *(line + halo; artifacts cleared on replan)*
-- [x] **Task:** long-route timeout/rescue handling *(total API + client caps; 408 / classified UI — **per-stage** budgets still open)*
-- [x] **Task:** UI error-contract behavior *(timeout / network / HTTP distinctions in `classifyPlanError`)*
+- [x] **Owner:** David  **Task:** F1 marker cleanup between plans *(clear on replan before `fetch`)*
+- [x] **Owner:** David  **Task:** F2 readable basemap labels *(Carto Voyager `styleUrl`)*
+- [x] **Owner:** David  **Task:** F3 highlighted selected route *(line + halo; artifacts cleared on replan)*
+- [x] **Owner:** David  **Task:** long-route timeout/rescue handling *(total API + client caps; 408 / classified UI — **per-stage** budgets still open)*
+- [x] **Owner:** David  **Task:** UI error-contract behavior *(timeout / network / HTTP distinctions in `classifyPlanError`)*
 
 **Phase 1 exit criteria**
-- [ ] Re-plan map 5x in one session without stale markers/routes. *(implemented — **needs recurring manual/visual confirmation**)* 
-- [ ] `Raleigh -> Greensboro` succeeds consistently. *(planner path OK in E2E sanity case; **user env** must match **3000/3001 + CORS + clean `.next`**)*
-- [x] Long-haul requests return clear, classified failures (no generic `Failed to fetch` only — **improved**; providers can still fail for other reasons).
-- [ ] `/plan` has explicit per-stage timeout budgets (`geocode`, `NREL`, `Overpass`, `Valhalla`) plus total request cap documented and enforced. *(**Total** cap + Overpass query timeout **yes**; **per-stage matrix** still **TODO**.)*
+- [ ] **Owner:** David  Re-plan map 5x in one session without stale markers/routes. *(implemented — **needs recurring manual/visual confirmation**)*
+- [ ] **Owner:** David  `Raleigh -> Greensboro` succeeds consistently. *(planner path OK in E2E sanity case; **user env** must match **3000/3001 + CORS + clean `.next`**)*
+- [x] **Owner:** David  Long-haul requests return clear, classified failures (no generic `Failed to fetch` only — **improved**; providers can still fail for other reasons).
+- [ ] **Owner:** David  `/plan` has explicit per-stage timeout budgets (`geocode`, `NREL`, `Overpass`, `Valhalla`) plus total request cap documented and enforced. *(**Total** cap + Overpass query timeout **yes**; **per-stage matrix** still **TODO**.)*
 
 ### Phase 2 — Local Mirror Architecture (A/B/C lanes)
-- [ ] **Owner:** ______  **Task:** A1-A5 architecture decisions finalized and reviewed
-- [ ] **Owner:** ______  **Task:** B1-B4 snapshot/validation/fallback architecture finalized
-- [ ] **Owner:** ______  **Task:** C1-C4 migration/rollback/observability architecture finalized
+- [ ] **Owner:** David  **Task:** A1-A5 architecture decisions finalized and reviewed
+- [ ] **Owner:** David  **Task:** B1-B4 snapshot/validation/fallback architecture finalized
+- [ ] **Owner:** David  **Task:** C1-C4 migration/rollback/observability architecture finalized
 
 **Phase 2 exit criteria**
-- [ ] Source router ownership is centralized (single policy module design).
-- [ ] Typed error taxonomy and fallback matrix are complete (no silent-path gaps).
-- [ ] Snapshot lifecycle supports atomic promotion and rejection of invalid snapshots.
-- [ ] Dual-read compare and rollback trigger rules are explicit and testable on paper.
-- [ ] Matrix test requirement is explicit: `mode x failure` coverage (`remote-only`/`dual-read`/`local-primary` x `timeout`/`stale`/`schema mismatch`/`source unavailable`).
+- [ ] **Owner:** David  Source router ownership is centralized (single policy module design).
+- [ ] **Owner:** David  Typed error taxonomy and fallback matrix are complete (no silent-path gaps).
+- [ ] **Owner:** David  Snapshot lifecycle supports atomic promotion and rejection of invalid snapshots.
+- [ ] **Owner:** David  Dual-read compare and rollback trigger rules are explicit and testable on paper.
+- [ ] **Owner:** David  Matrix test requirement is explicit: `mode x failure` coverage (`remote-only`/`dual-read`/`local-primary` x `timeout`/`stale`/`schema mismatch`/`source unavailable`).
 
 ### Phase 3 — QA + CI Hardening
-- [ ] **Owner:** ______  **Task:** one-command QA harness (WSL/Windows stable path) — *partially superseded by **`TESTING.md` + npm scripts**; **single CLI** still open*
-- [ ] **Owner:** ______  **Task:** finalize CI gating plan with dev-infra timing
-- [ ] **Owner:** ______  **Task:** connect SLO/error-budget checks to runbook/dashboard
+- [ ] **Owner:** David  **Task:** one-command QA harness (WSL/Windows stable path) — *partially superseded by **`TESTING.md` + npm scripts**; **single CLI** still open*
+- [ ] **Owner:** David  **Task:** finalize CI gating plan with dev-infra timing
+- [ ] **Owner:** David  **Task:** connect SLO/error-budget checks to runbook/dashboard
 
 **Phase 3 exit criteria**
-- [ ] Single command runs setup + smoke + artifacts with clear pass/fail. *(**Manual path** documented; **one-shot automation** still open.)*
-- [ ] CI/dev-infra decision recorded and gate scope agreed.
-- [ ] SLO/error-budget signals are visible enough for release readiness calls.
+- [ ] **Owner:** David  Single command runs setup + smoke + artifacts with clear pass/fail. *(**Manual path** documented; **one-shot automation** still open.)*
+- [ ] **Owner:** David  CI/dev-infra decision recorded and gate scope agreed.
+- [ ] **Owner:** David  SLO/error-budget signals are visible enough for release readiness calls.
 
 ### Deferred (explicit)
 - **Provider contract/snapshot test suite expansion** — after mirror rollout starts.
