@@ -3,3 +3,4 @@ node_modules
 .cursor
 .gstack/
 web/.next/
+api/dist/
