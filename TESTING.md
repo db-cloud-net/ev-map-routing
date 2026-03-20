@@ -16,6 +16,8 @@ The backend functional layer is especially important because external services (
 - API server running on **`http://localhost:3001`**
 - Web app running on **`http://localhost:3000`**
 
+**Default manual dev:** from repo root, two terminals: `npm run dev:api` then `npm run dev:web`. Set **`CORS_ORIGIN=http://localhost:3000`** in `.env` so the API accepts requests from that origin (see `.env.example`).
+
 `api/dist/` is not committed; run **`npm -w api run build`** before **`npm -w api run start`** (production-style). For local dev, **`npm -w api run dev`** runs TypeScript directly.
 
 ### Environment variable source
