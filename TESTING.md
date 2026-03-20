@@ -16,6 +16,8 @@ The backend functional layer is especially important because external services (
 - API server running on **`http://localhost:3001`**
 - Web app running on **`http://localhost:3000`**
 
+`api/dist/` is not committed; run **`npm -w api run build`** before **`npm -w api run start`** (production-style). For local dev, **`npm -w api run dev`** runs TypeScript directly.
+
 ### Environment variable source
 
 Keep secrets in `.env` (already supported by `api/src/server.ts`).
