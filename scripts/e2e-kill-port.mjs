@@ -26,10 +26,40 @@ export function killListenersOnPort(port, opts = {}) {
 
   try {
     if (process.platform === "win32") {
-      execSync(
-        `powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort ${p} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
-        { stdio: "ignore" }
-      );
+      try {
+        execSync(
+          `powershell -NoProfile -Command "$pids = Get-NetTCPConnection -LocalPort ${p} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($procId in $pids) { if ($procId) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue } }"`,
+          { stdio: "ignore" }
+        );
+      } catch {
+        // ignore
+      }
+      try {
+        const out = execSync(`cmd.exe /c netstat -ano`, { encoding: "utf8" });
+        const portSuffix = `:${p}`;
+        const seen = new Set();
+        for (const line of out.split(/\r?\n/)) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("TCP")) continue;
+          if (!trimmed.includes("LISTENING")) continue;
+          const parts = trimmed.split(/\s+/).filter(Boolean);
+          if (parts.length < 5) continue;
+          const localAddr = parts[1];
+          if (!localAddr.endsWith(portSuffix)) continue;
+          const m = localAddr.match(/:(\d+)$/);
+          if (!m || Number(m[1]) !== p) continue;
+          const pid = Number(parts[parts.length - 1]);
+          if (!Number.isFinite(pid) || pid <= 0 || seen.has(pid)) continue;
+          seen.add(pid);
+          try {
+            execSync(`taskkill /PID ${pid} /F`, { stdio: "ignore" });
+          } catch {
+            // ignore
+          }
+        }
+      } catch {
+        // ignore
+      }
       log(`freed listeners on :${p} (Windows)`);
     } else {
       let pids = "";

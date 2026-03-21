@@ -2,6 +2,7 @@ import express from "express";
 import http from "http";
 import { z } from "zod";
 import { randomUUID } from "crypto";
+import { execSync } from "child_process";
 import { planTrip } from "./planner/planTrip";
 import { withTimeout } from "./planTimeout";
 import { ProviderCallMetrics, runPlanWithProviderMetrics } from "./services/providerCallMetrics";
@@ -249,35 +250,168 @@ app.post("/plan", async (req, res) => {
 const port = Number(process.env.PORT ?? "3001");
 const httpServer = http.createServer(app);
 
-const MAX_PORT_RETRIES = Number(process.env.API_LISTEN_RETRY_MAX ?? "12");
-const PORT_RETRY_MS = Number(process.env.API_LISTEN_RETRY_MS ?? "300");
+/**
+ * ts-node-dev can start the new process before the old child releases the port.
+ * Retrying listen() in a tight loop stacks listeners; instead we best-effort kill
+ * listeners on this port before binding (dev-like deployments only).
+ *
+ * Windows: `Get-NetTCPConnection -LocalPort` without `-State Listen` can miss the
+ * actual LISTEN socket; we use `-State Listen` and a `netstat -ano` + `taskkill`
+ * fallback. One delayed re-bind handles races where the OS hasn't released yet.
+ */
+function netstatListeningPidsWin(p: number): number[] {
+  try {
+    const out = execSync(`cmd.exe /c netstat -ano`, { encoding: "utf8" });
+    const pids = new Set<number>();
+    const portSuffix = `:${p}`;
+    for (const line of out.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("TCP")) continue;
+      if (!trimmed.includes("LISTENING")) continue;
+      const parts = trimmed.split(/\s+/).filter(Boolean);
+      if (parts.length < 5) continue;
+      const localAddr = parts[1];
+      if (!localAddr.endsWith(portSuffix)) continue;
+      const m = localAddr.match(/:(\d+)$/);
+      if (!m || Number(m[1]) !== p) continue;
+      const pid = Number(parts[parts.length - 1]);
+      if (Number.isFinite(pid) && pid > 0 && pid !== process.pid) {
+        pids.add(pid);
+      }
+    }
+    return [...pids];
+  } catch {
+    return [];
+  }
+}
 
-function tryListen(attempt = 0): void {
+function freeListeningPortBestEffort(p: number): void {
+  try {
+    if (process.platform === "win32") {
+      try {
+        execSync(
+          `powershell -NoProfile -Command "$pids = Get-NetTCPConnection -LocalPort ${p} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($procId in $pids) { if ($procId -and $procId -ne ${process.pid}) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue } }"`,
+          { stdio: "ignore" }
+        );
+      } catch {
+        // ignore
+      }
+      for (const pid of netstatListeningPidsWin(p)) {
+        try {
+          execSync(`taskkill /PID ${pid} /F`, { stdio: "ignore" });
+        } catch {
+          // ignore
+        }
+      }
+    } else {
+      let pids = "";
+      try {
+        pids = execSync(`lsof -ti:${p}`, { encoding: "utf8" }).trim();
+      } catch {
+        // no listeners
+      }
+      if (pids) {
+        for (const pid of pids.split(/\s+/).filter(Boolean)) {
+          if (pid === String(process.pid)) continue;
+          try {
+            execSync(`kill -9 ${pid}`, { stdio: "ignore" });
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+const shouldFreePortBeforeListen =
+  process.env.API_FREE_PORT_BEFORE_LISTEN !== "false" &&
+  deploymentEnv !== "production" &&
+  deploymentEnv !== "prod";
+
+const maxListenAttempts = Math.min(
+  20,
+  Math.max(1, Number(process.env.API_LISTEN_MAX_ATTEMPTS ?? "5") || 5)
+);
+
+/**
+ * After killing listeners, Windows can take a moment to release the socket.
+ * Skip on attempt 0 so cold starts stay fast when the port is already free; retries
+ * (attempt ≥ 1) run after a prior EADDRINUSE and benefit from a short wait.
+ * Set API_ALWAYS_SLEEP_AFTER_FREE=true to wait after every free.
+ */
+function sleepMsAfterFreePortSync(attempt: number): void {
+  if (!shouldFreePortBeforeListen) return;
+  const always = process.env.API_ALWAYS_SLEEP_AFTER_FREE === "true";
+  if (attempt === 0 && !always) return;
+  const ms =
+    process.platform === "win32"
+      ? Math.max(0, Number(process.env.API_AFTER_FREE_PORT_MS_WIN ?? "220") || 220)
+      : Math.max(0, Number(process.env.API_AFTER_FREE_PORT_MS_UNIX ?? "60") || 60);
+  if (ms <= 0) return;
+  try {
+    if (process.platform === "win32") {
+      execSync(`powershell -NoProfile -Command "Start-Sleep -Milliseconds ${ms}"`, {
+        stdio: "ignore"
+      });
+    } else {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        /* dev-only startup sync wait; avoids fractional sleep portability issues */
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function startListening(attempt: number): void {
+  if (shouldFreePortBeforeListen) {
+    freeListeningPortBestEffort(port);
+    sleepMsAfterFreePortSync(attempt);
+  }
+
+  // Use explicit `listening` + `listen()` without a callback. A failed `listen()`
+  // can leave a stale `listening` listener; a later successful bind may invoke
+  // every registered listener — producing duplicate "api listening" lines.
+  let onListening: () => void;
+
   const onError = (err: NodeJS.ErrnoException) => {
     httpServer.off("error", onError);
-    if (err.code === "EADDRINUSE" && attempt < MAX_PORT_RETRIES) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[api] port ${port} busy (EADDRINUSE), retry ${attempt + 1}/${MAX_PORT_RETRIES} in ${PORT_RETRY_MS}ms…`
-      );
-      // Close the failed listen attempt before retrying (helps ts-node-dev restarts).
+    httpServer.off("listening", onListening);
+    if (err.code === "EADDRINUSE" && attempt < maxListenAttempts - 1 && shouldFreePortBeforeListen) {
+      freeListeningPortBestEffort(port);
       httpServer.close(() => {
-        setTimeout(() => tryListen(attempt + 1), PORT_RETRY_MS);
+        const delayMs = Math.min(350 * 2 ** attempt, 3000);
+        setTimeout(() => startListening(attempt + 1), delayMs);
       });
       return;
     }
     // eslint-disable-next-line no-console
     console.error(err);
+    if (err.code === "EADDRINUSE") {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[api] Port ${port} is still in use. Stop the other process (e.g. duplicate npm run dev:api) or change PORT.`
+      );
+    }
     process.exit(1);
   };
 
-  httpServer.once("error", onError);
-  httpServer.listen(port, () => {
+  onListening = () => {
     httpServer.off("error", onError);
     // eslint-disable-next-line no-console
     console.log(`api listening on :${port}`);
-  });
+  };
+
+  httpServer.once("error", onError);
+  httpServer.once("listening", onListening);
+  httpServer.listen(port);
 }
+
+startListening(0);
 
 function shutdown(signal: string): void {
   // eslint-disable-next-line no-console
@@ -294,6 +428,4 @@ function shutdown(signal: string): void {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
-
-tryListen();
 
