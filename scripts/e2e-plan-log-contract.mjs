@@ -19,6 +19,7 @@
 import { execSync, spawn } from "node:child_process";
 import readline from "node:readline";
 import process from "node:process";
+import { killListenersOnPort } from "./e2e-kill-port.mjs";
 
 const API_PORT = Number(process.env.API_PORT ?? "3010");
 const API_BASE = process.env.API_BASE ?? `http://localhost:${API_PORT}`;
@@ -47,6 +48,7 @@ async function waitForHealth({ timeoutMs = 60000 } = {}) {
 }
 
 function startServer() {
+  killListenersOnPort(API_PORT, { verbose: process.env.E2E_VERBOSE === "1" });
   execSync("npm -w api run build", { stdio: "inherit" });
 
   const serverEntry = "api/dist/api/src/server.js";

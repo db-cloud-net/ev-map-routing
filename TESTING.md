@@ -195,6 +195,8 @@ These scripts are also listed individually below — they keep critical “plumb
 - Browser-level smoke check that the UI renders the `Itinerary` panel and shows no CORS/preflight console errors:
   - `node scripts/ui-plan-trip-smoke.mjs`
 
+**Port already in use (`EADDRINUSE`) when E2E spawns the API:** a previous run may have left a `node` process listening on the same `API_PORT`. The scripts [`e2e-cors-functional.mjs`](../scripts/e2e-cors-functional.mjs), [`e2e-plan-log-contract.mjs`](../scripts/e2e-plan-log-contract.mjs), [`e2e-plan-functional.mjs`](../scripts/e2e-plan-functional.mjs) (when `SPAWN_SERVER=true`), and [`e2e-replan-smoke.mjs`](../scripts/e2e-replan-smoke.mjs) call [`e2e-kill-port.mjs`](../scripts/e2e-kill-port.mjs) first to **best-effort kill listeners** on that port. If it still fails, manually end the process (Task Manager / `taskkill`, or `Get-NetTCPConnection -LocalPort <port>` on Windows).
+
 For browser evidence from gstack runs, screenshots are saved under:
 - `.gstack/qa-reports/screenshots/`
 

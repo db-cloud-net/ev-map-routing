@@ -16,6 +16,7 @@
 
 import { execSync, spawn } from "node:child_process";
 import process from "node:process";
+import { killListenersOnPort } from "./e2e-kill-port.mjs";
 
 const API_PORT = Number(process.env.API_PORT ?? "3001");
 const API_BASE = process.env.API_BASE ?? `http://localhost:${API_PORT}`;
@@ -101,6 +102,8 @@ async function startServerWithOverrides(overrides) {
     ...overrides,
     PORT: String(API_PORT)
   };
+
+  killListenersOnPort(API_PORT, { verbose: process.env.E2E_VERBOSE === "1" });
 
   // `api/src/server.ts` compiles to `api/dist/api/src/server.js` (per tsconfig outDir/rootDir).
   const serverEntry = "api/dist/api/src/server.js";
