@@ -28,9 +28,15 @@ export type ItineraryLeg = {
   }>;
 };
 
+/** Mid-journey replan: use coords or a stop id from `previousStops` (mutually exclusive with `start`). */
+export type ReplanFrom =
+  | { coords: LatLng }
+  | { stopId: string };
+
 /** Request body for `POST /plan` (v2 adds optional fields; omit for v1 A→B). */
 export type PlanTripRequest = {
-  start: string; // user-provided place/address text (geocode later)
+  /** User-provided start place text (geocode later). Omit when `replanFrom` is set (Slice 2). */
+  start?: string;
   end: string;
   /** Ordered intermediate destinations (geocoded strings). Omitted or empty = v1 behavior. */
   waypoints?: string[];
@@ -43,6 +49,13 @@ export type PlanTripRequest = {
   lockedChargersByLeg?: string[][];
   /** When an overnight stop is inserted, prefer this hotel id (Overpass id) if it appears near the anchor. */
   lockedHotelId?: string;
+  /**
+   * **Slice 2:** New plan start — device coords or a stop from the prior plan.
+   * Requires `end` (and optional remainder `waypoints`). With `stopId`, send **`previousStops`** from the last `POST /plan` response.
+   */
+  replanFrom?: ReplanFrom;
+  /** Stops array from the immediately previous successful `POST /plan` — required for `replanFrom.stopId`. */
+  previousStops?: ItineraryStop[];
 };
 
 export type CandidateCharger = {

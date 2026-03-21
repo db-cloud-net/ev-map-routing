@@ -94,7 +94,7 @@ Tunnel/network layout (Docker `prod-network`, `cloudflared`, etc.): **[docs/CLOU
 
 ## Version 2 smoke (automated + manual)
 
-**Automated:** `npm run qa:smoke` runs `npm -w api run build` plus existing E2E scripts (CORS + log contract). Those scripts must stay green after v2 changes.
+**Automated:** `npm run qa:smoke` runs `npm -w api run build` plus E2E scripts (CORS + log contract + **Slice 2 replan**). Those scripts must stay green after v2 changes.
 
 **Manual quick check (2–3 minutes):**
 1. Start API + web (`3001` / `3000`).
@@ -102,6 +102,7 @@ Tunnel/network layout (Docker `prod-network`, `cloudflared`, etc.): **[docs/CLOU
 3. Open `/map`, enable **Show charger candidates**, run **Plan Trip** — green markers should appear for candidates; itinerary markers still render.
 4. **Waypoints:** set start `Raleigh, NC`, waypoint `Charlotte, NC`, end `Atlanta, GA` — expect `status: "ok"` and at least one `waypoint` stop in `stops` when the chain succeeds.
 5. **Locks (Slice 1):** With **no** waypoints, run a plan with `includeCandidates: true`, then `POST` again with `lockedChargersByLeg: [[ "<id from candidates.chargers[0].id>" ]]` — expect `ok` or `INFEASIBLE_CHARGER_LOCK` / `LOCKED_ROUTE_TOO_LONG` (never a bare 500). Unknown ids: `lockedChargersByLeg: [[ "definitely-not-a-real-id" ]]` → `UNKNOWN_CHARGER_LOCK` + HTTP 400.
+6. **Slice 2 (`replanFrom`):** On `/map`, use **Slice 2 — replan start** → **Replan from lat/lon**, set coords near the corridor, **End** unchanged → **Plan Trip** — expect `responseVersion: "v2-1"`, `debug.replan: true` on success. Then **Replan from prior itinerary stop**, pick a stop, **Plan Trip** — same. Requires a successful plan first for the stop dropdown.
 
 **Regression:** Omitting `waypoints` + `includeCandidates` should match prior v1 behavior (`responseVersion: "mvp-1"` when neither is sent).
 
@@ -184,7 +185,7 @@ node scripts/e2e-plan-functional.mjs
 npm run qa:smoke
 ```
 
-Runs [`scripts/qa-smoke-all.mjs`](../scripts/qa-smoke-all.mjs) (`npm -w api run build`, then `e2e-cors-functional.mjs`, then `e2e-plan-log-contract.mjs`). See [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md) for suggested CI gating.
+Runs [`scripts/qa-smoke-all.mjs`](../scripts/qa-smoke-all.mjs) (`npm -w api run build`, then `e2e-cors-functional.mjs`, `e2e-plan-log-contract.mjs`, `e2e-replan-smoke.mjs`). See [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md) for suggested CI gating.
 
 These scripts are also listed individually below — they keep critical “plumbing” stable while you add new functionality:
 

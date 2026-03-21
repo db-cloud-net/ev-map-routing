@@ -37,6 +37,11 @@ export default function MapPage() {
   /** Per-leg ordered charger locks (Slice 1 UI: single-leg trips only; multi-leg rows stay empty). */
   const [lockedChargersByLeg, setLockedChargersByLeg] = useState<string[][]>([[]]);
   const [lockedHotelId, setLockedHotelId] = useState<string | null>(null);
+  /** Slice 2: mid-journey replan — omit `start`, use coords or a stop from the last plan. */
+  const [replanMode, setReplanMode] = useState<"off" | "coords" | "stopId">("off");
+  const [replanLat, setReplanLat] = useState("35.7796");
+  const [replanLon, setReplanLon] = useState("-78.6382");
+  const [replanStopId, setReplanStopId] = useState("");
 
   const parsedWaypoints = useMemo(
     () =>
@@ -308,6 +313,8 @@ export default function MapPage() {
     clearMapPlanArtifacts();
     setLoading(true);
     setError(null);
+    /** Slice 2 `replanFrom.stopId` needs stops from the prior plan — capture before clearing UI state. */
+    const priorPlanForReplan = plan;
     setPlan(null);
     const clientMs = Number(process.env.NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS ?? 130000);
     const controller = new AbortController();
@@ -319,13 +326,33 @@ export default function MapPage() {
       const locks = lockedChargersByLeg.slice(0, legCount).map((r) => [...r]);
       const hasLocks = locks.some((r) => r.length > 0);
       const body: Record<string, unknown> = {
-        start,
         end,
         includeCandidates: true,
         ...(wps.length ? { waypoints: wps } : {}),
         ...(hasLocks ? { lockedChargersByLeg: locks } : {}),
         ...(lockedHotelId ? { lockedHotelId } : {})
       };
+
+      if (replanMode === "coords") {
+        const lat = Number.parseFloat(replanLat);
+        const lon = Number.parseFloat(replanLon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          throw new Error("Replan: enter valid latitude and longitude.");
+        }
+        body.replanFrom = { coords: { lat, lon } };
+      } else if (replanMode === "stopId") {
+        if (!priorPlanForReplan?.stops?.length) {
+          throw new Error('Replan from stop: run a normal "Plan Trip" first, then pick a stop.');
+        }
+        const sid = replanStopId.trim();
+        if (!sid || !priorPlanForReplan.stops.some((s) => s.id === sid)) {
+          throw new Error("Replan from stop: choose a valid stop id from the list.");
+        }
+        body.replanFrom = { stopId: sid };
+        body.previousStops = priorPlanForReplan.stops;
+      } else {
+        body.start = start;
+      }
       resp = await fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -375,14 +402,89 @@ export default function MapPage() {
         </p>
 
         <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
+          <fieldset style={{ margin: 0, padding: "10px 12px", border: "1px solid #ddd", borderRadius: 6 }}>
+            <legend style={{ fontSize: 13 }}>Slice 2 — replan start</legend>
+            <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
+              <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  type="radio"
+                  name="replanMode"
+                  checked={replanMode === "off"}
+                  onChange={() => setReplanMode("off")}
+                />
+                Normal start (address)
+              </label>
+              <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  type="radio"
+                  name="replanMode"
+                  checked={replanMode === "coords"}
+                  onChange={() => setReplanMode("coords")}
+                />
+                Replan from lat/lon (device / map)
+              </label>
+              <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  type="radio"
+                  name="replanMode"
+                  checked={replanMode === "stopId"}
+                  onChange={() => setReplanMode("stopId")}
+                />
+                Replan from prior itinerary stop
+              </label>
+            </div>
+          </fieldset>
+
           <label>
-            <div style={{ marginBottom: 6 }}>Start</div>
+            <div style={{ marginBottom: 6 }}>Start {replanMode !== "off" ? "(unused)" : ""}</div>
             <input
               value={start}
               onChange={(e) => setStart(e.target.value)}
-              style={{ width: "100%", padding: 8 }}
+              disabled={replanMode !== "off"}
+              style={{ width: "100%", padding: 8, opacity: replanMode !== "off" ? 0.5 : 1 }}
             />
           </label>
+
+          {replanMode === "coords" ? (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <label>
+                <div style={{ marginBottom: 4, fontSize: 12 }}>Replan latitude</div>
+                <input
+                  value={replanLat}
+                  onChange={(e) => setReplanLat(e.target.value)}
+                  style={{ width: "100%", padding: 8 }}
+                />
+              </label>
+              <label>
+                <div style={{ marginBottom: 4, fontSize: 12 }}>Replan longitude</div>
+                <input
+                  value={replanLon}
+                  onChange={(e) => setReplanLon(e.target.value)}
+                  style={{ width: "100%", padding: 8 }}
+                />
+              </label>
+            </div>
+          ) : null}
+
+          {replanMode === "stopId" ? (
+            <label>
+              <div style={{ marginBottom: 6, fontSize: 12 }}>
+                Prior stop (from last successful plan below)
+              </div>
+              <select
+                value={replanStopId}
+                onChange={(e) => setReplanStopId(e.target.value)}
+                style={{ width: "100%", padding: 8 }}
+              >
+                <option value="">— select stop —</option>
+                {(plan?.stops ?? []).map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.type}: {s.name} ({s.id})
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <label>
             <div style={{ marginBottom: 6 }}>End</div>
             <input

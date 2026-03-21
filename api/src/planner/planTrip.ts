@@ -1,17 +1,23 @@
 import { geocodeTextToLatLng } from "../services/geocode";
-import type { PlanTripResponse } from "../types";
+import type { ItineraryStop, PlanTripResponse } from "../types";
 import { planTripOneLegFromCoords } from "./planTripOneLeg";
 import { validateLockedChargersByLeg } from "./lockValidation";
+import { resolvePlanStart, type ReplanFromInput } from "./replanResolve";
 
 export type PlanTripPlannerInput = {
   requestId: string;
-  start: string;
+  /** Geocoded start text; omit when `replanFrom` is set. */
+  start?: string;
   end: string;
   responseVersion: string;
   waypoints?: string[];
   includeCandidates?: boolean;
   lockedChargersByLeg?: string[][];
   lockedHotelId?: string;
+  /** Mid-journey replan: replaces `start`. */
+  replanFrom?: ReplanFromInput;
+  /** Stops from the previous `POST /plan` — required for `replanFrom.stopId`. */
+  previousStops?: ItineraryStop[];
 };
 
 function dedupeById<T extends { id: string }>(rows: T[]): T[] {
@@ -25,15 +31,38 @@ function dedupeById<T extends { id: string }>(rows: T[]): T[] {
   return out;
 }
 
+function lockErrorResponse(
+  input: PlanTripPlannerInput,
+  message: string,
+  errorCode: string
+): PlanTripResponse {
+  return {
+    requestId: input.requestId,
+    responseVersion: input.responseVersion || "v2-1",
+    status: "error",
+    message,
+    errorCode,
+    stops: [],
+    legs: [],
+    totals: {
+      travelTimeMinutes: 0,
+      chargeTimeMinutes: 0,
+      sleepTimeMinutes: 0,
+      totalTimeMinutes: 0,
+      overnightStopsCount: 0
+    }
+  };
+}
+
 async function planTripMultiLeg(
-  input: PlanTripPlannerInput & { waypoints: string[] }
+  input: PlanTripPlannerInput & { waypoints: string[] },
+  resolved: { startCoords: { lat: number; lon: number }; startLabel: string }
 ): Promise<PlanTripResponse> {
-  const startCoords = await geocodeTextToLatLng(input.start);
   const wpCoords = await Promise.all(input.waypoints.map((w) => geocodeTextToLatLng(w)));
   const endCoords = await geocodeTextToLatLng(input.end);
 
-  const points = [startCoords, ...wpCoords, endCoords];
-  const labels = [input.start, ...input.waypoints, input.end];
+  const points = [resolved.startCoords, ...wpCoords, endCoords];
+  const labels = [resolved.startLabel, ...input.waypoints, input.end];
 
   const allChargers: NonNullable<PlanTripResponse["candidates"]>["chargers"] = [];
   const allHotels: NonNullable<PlanTripResponse["candidates"]>["hotels"] = [];
@@ -160,24 +189,64 @@ export async function planTrip(input: PlanTripPlannerInput): Promise<PlanTripRes
     };
   }
 
+  const lockCheck = validateLockedChargersByLeg(wps, input.lockedChargersByLeg);
+  if (!lockCheck.ok) {
+    return lockErrorResponse(input, lockCheck.message, lockCheck.errorCode);
+  }
+
+  const resolved = await resolvePlanStart({
+    requestId: input.requestId,
+    responseVersion: input.responseVersion,
+    start: input.start,
+    replanFrom: input.replanFrom,
+    previousStops: input.previousStops
+  });
+  if (!resolved.ok) {
+    return resolved.response;
+  }
+
+  const { startCoords, startLabel, midJourneyReplan } = resolved;
+
   if (!wps.length) {
-    const startCoords = await geocodeTextToLatLng(input.start);
     const endCoords = await geocodeTextToLatLng(input.end);
-    return planTripOneLegFromCoords({
+    const one = await planTripOneLegFromCoords({
       requestId: input.requestId,
       responseVersion: input.responseVersion,
       startCoords,
       endCoords,
       endStopId: "end",
       segmentStartId: "start",
-      startQueryLabel: input.start,
+      startQueryLabel: startLabel,
       endQueryLabel: input.end,
       includeCandidates: input.includeCandidates,
       legIndex: 0,
       lockedChargerIdsOrdered: input.lockedChargersByLeg?.[0],
       lockedHotelId: input.lockedHotelId
     });
+    if (one.status === "ok" && midJourneyReplan) {
+      return {
+        ...one,
+        debug: {
+          ...(one.debug ?? {}),
+          replan: true
+        }
+      };
+    }
+    return one;
   }
 
-  return planTripMultiLeg({ ...input, waypoints: wps });
+  const multi = await planTripMultiLeg(
+    { ...input, waypoints: wps },
+    { startCoords, startLabel }
+  );
+  if (multi.status === "ok" && midJourneyReplan) {
+    return {
+      ...multi,
+      debug: {
+        ...(multi.debug ?? {}),
+        replan: true
+      }
+    };
+  }
+  return multi;
 }

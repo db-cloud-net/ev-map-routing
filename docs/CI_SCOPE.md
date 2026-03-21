@@ -13,7 +13,7 @@
 |------|---------|--------|
 | API compile | `npm -w api run build` | `tsc` |
 | Web compile | `npm -w web run build` | Optional second stage if CI time allows |
-| Automated smoke | `npm run qa:smoke` | `scripts/qa-smoke-all.mjs`: API build + `e2e-cors-functional.mjs` + `e2e-plan-log-contract.mjs` |
+| Automated smoke | `npm run qa:smoke` | `scripts/qa-smoke-all.mjs`: API build + `e2e-cors-functional.mjs` + `e2e-plan-log-contract.mjs` + `e2e-replan-smoke.mjs` |
 
 ## Deferred / manual
 

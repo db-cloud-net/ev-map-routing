@@ -39,5 +39,8 @@ runStep("e2e-cors-functional.mjs", "node", [
 runStep("e2e-plan-log-contract.mjs", "node", [
   path.join(root, "scripts", "e2e-plan-log-contract.mjs")
 ]);
+runStep("e2e-replan-smoke.mjs", "node", [
+  path.join(root, "scripts", "e2e-replan-smoke.mjs")
+]);
 
 console.log("\n[qa:smoke] All steps passed.\n");

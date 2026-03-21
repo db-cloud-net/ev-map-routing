@@ -242,13 +242,13 @@ Repo hygiene requirement (before running `/qa`):
 - `replanFrom.coords` is **sensitive**. The API must not log or persist raw lat/lon by default. Document in `docs/V2_API.md` and future runbooks.
 - Client must explicitly opt in (e.g. “Replan from my location” button) and obtain user consent before calling the Geolocation API.
 
-**Not in scope (Slice 2 design only)**
+**Not in scope (Slice 2)**
 
 - Automatic “you’re off-route, replan?” prompts.
 - Real-time position streaming or continuous replanning.
 - SOC / battery state as input (future enhancement).
 
-**Implementation gate:** Slice 2 is **design-only** until approved. No backend or UI changes until the API sketch is locked in and `TESTING.md` is updated.
+**Implementation:** **`replanFrom`** + **`previousStops`** (for `stopId`) — see **[docs/V2_API.md](docs/V2_API.md)** and **`TESTING.md`**.
 
 ### V2 non-goals (baseline)
 1. Deterministic routes across replans (still non-goal).

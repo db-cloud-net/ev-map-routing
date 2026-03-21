@@ -6,17 +6,23 @@ This document describes **additive** fields on `POST /plan`. Omitting them prese
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `start` | string | yes | Start place text (geocoded). |
+| `start` | string | yes† | Start place text (geocoded). **Omitted** when `replanFrom` is set (Slice 2). |
 | `end` | string | yes | End place text (geocoded). |
-| `waypoints` | string[] | no | Ordered intermediate destinations (each geocoded). Empty/omitted = single leg (v1). |
+| `waypoints` | string[] | no | Ordered intermediate destinations (each geocoded). Empty/omitted = single leg (v1). With **Slice 2**, only **remaining** waypoints after the new start. |
 | `includeCandidates` | boolean | no | When `true`, successful **`ok`** responses may include `candidates` for map layers. |
 | `lockedChargersByLeg` | string[][] | no | **Slice 1:** One array per **driving leg** (length = `max(1, waypoints.length + 1)`). Each inner array is an **ordered** list of charger **ids** that must be visited on that leg (hard constraint). Ids must exist in the current corridor’s candidate set (same universe as `candidates.chargers`). |
 | `lockedHotelId` | string | no | **Slice 1:** When an overnight stop is inserted, prefer this **Overpass** hotel id if it appears near an anchor charger. |
+| `replanFrom` | `{ coords: { lat, lon } }` \| `{ stopId: string }` | no† | **Slice 2:** New plan start — device coordinates or a stop from the prior plan. **Mutually exclusive** with non-empty `start`. |
+| `previousStops` | `ItineraryStop[]` | no‡ | **Slice 2:** Stops from the **immediately previous** successful `POST /plan` response. **Required** when `replanFrom.stopId` is set (stateless lookup; no server session). |
+
+† Exactly one of **`start`** (non-empty) or **`replanFrom`** must be present.  
+‡ Required for `replanFrom.stopId`; omit for `replanFrom.coords`.
 
 ### Limits
 - `waypoints` length capped by **`V2_MAX_WAYPOINTS`** (default **8**; server schema allows up to **24** strings — the planner enforces the env cap).
 - Each `lockedChargersByLeg` row length capped by **`V2_MAX_LOCKED_CHARGERS`** (default **8**).
 - Strings are trimmed; empty lines ignored on the web client.
+- `previousStops` capped at **200** entries (schema).
 
 ### Candidate surface (embed in `/plan` response)
 v2 **does not** add a separate `GET` endpoint in the baseline implementation. The web receives **`candidates` inside the `POST /plan` response** when `includeCandidates: true`:
@@ -29,13 +35,22 @@ v2 **does not** add a separate `GET` endpoint in the baseline implementation. Th
 - **Chargers:** Implemented as a **hard** constraint via **chained** least-time segments: `start → lock₁ → … → lockₙ → end` within each leg. Does **not** run the overnight splitter; if the chained plan exceeds **`OVERNIGHT_THRESHOLD_MINUTES`**, the API returns **`LOCKED_ROUTE_TOO_LONG`**.
 - **Hotels:** When the standard overnight path runs, **`lockedHotelId`** selects that hotel when it appears in Overpass results near a candidate anchor; otherwise **`UNKNOWN_HOTEL_LOCK`**.
 
+### Mid-journey replan (Slice 2)
+
+User replans from **current** coordinates or a **planned stop** to **`end`** (and optional remainder **`waypoints`**). See **PRD.md** § *Mid-journey replan (Slice 2)* for product scenario and privacy.
+
+- **`replanFrom.coords`:** Use as the new start point (no geocode). Structured logs use **`replanFrom: { mode: "coords" }`** — **raw lat/lon are not logged**.
+- **`replanFrom.stopId`:** Resolved against **`previousStops`** (same `id` as a prior `stops[]` entry). Logs include **`stopId`** only.
+- **`lockedChargersByLeg` / `lockedHotelId`:** Apply to **remainder** legs only (same row count as `max(1, waypoints.length + 1)` for the remainder trip).
+- Successful responses may include **`debug.replan: true`** when the plan used mid-journey replan (`replanFrom`).
+
 ## Response
 
-`responseVersion` is **`mvp-1`** for legacy-shaped requests and **`v2-1`** when any v2 field is present (`waypoints`, `includeCandidates`, `lockedChargersByLeg`, or `lockedHotelId`).
+`responseVersion` is **`mvp-1`** for legacy-shaped requests and **`v2-1`** when any v2 field is present (`waypoints`, `includeCandidates`, `lockedChargersByLeg`, `lockedHotelId`, or **`replanFrom`**).
 
 ### `PlanTripResponse` additions
 - **`candidates?`**: `{ chargers, hotels, legIndex }` — when `includeCandidates` was requested and planning succeeded for at least one leg.
-- **`errorCode?`**: machine-readable failure (`INVALID_LOCK_LEGS`, `UNKNOWN_CHARGER_LOCK`, `INFEASIBLE_CHARGER_LOCK`, `LOCKED_ROUTE_TOO_LONG`, `UNKNOWN_HOTEL_LOCK`, …).
+- **`errorCode?`**: machine-readable failure (`INVALID_LOCK_LEGS`, `UNKNOWN_CHARGER_LOCK`, `INFEASIBLE_CHARGER_LOCK`, `LOCKED_ROUTE_TOO_LONG`, `UNKNOWN_HOTEL_LOCK`, **`UNKNOWN_REPLAN_STOP`**, **`MISSING_PREVIOUS_STOPS`**, **`MISSING_START`**, …).
 - Stop type **`waypoint`**: used for intermediate destinations in multi-leg trips.
 
 ### Errors (message + optional `errorCode`)
@@ -47,38 +62,14 @@ v2 **does not** add a separate `GET` endpoint in the baseline implementation. Th
 - **Infeasible route with locks:** `INFEASIBLE_CHARGER_LOCK` (solver cannot connect locked sequence).
 - **Locked single-day trip too long:** `LOCKED_ROUTE_TOO_LONG`.
 - **Unknown / unplaceable hotel lock:** `UNKNOWN_HOTEL_LOCK`.
-
-## Roadmap — Slice 2: `replanFrom` (design only)
-
-Mid-journey replan: user replans from **current location** or a **planned stop** to the original `end`. See **PRD.md** § *Mid-journey replan (Slice 2)* for scenario and privacy notes.
-
-### Request additions (draft)
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `replanFrom` | `{ coords?: { lat: number; lon: number } } \| { stopId: string }` | **Mutually exclusive** with `start`. When present, the planner uses this as the new start; `end` and remaining `waypoints` define the remainder trip. |
-| `start` | string | **Omitted** when `replanFrom` is present. |
-| `end` | string | Required; unchanged for remainder planning. |
-| `waypoints` | string[] | Optional; only **remaining** waypoints (those after the new start). |
-
-**Rules**
-
-- Exactly one of `start` or `replanFrom` must be present.
-- With `replanFrom.stopId`, the server looks up the stop in the **last plan context** (session) or rejects with `UNKNOWN_REPLAN_STOP`. *(Implementation may require `planId` or session token; TBD.)*
-- `lockedChargersByLeg` / `lockedHotelId` apply to legs **after** the new start; array lengths must match remainder leg count.
-
-### Response
-
-- Same `PlanTripResponse` shape as Slice 1. Stops and legs describe the **remainder** trip only.
-
-### New error codes
-
-- **`UNKNOWN_REPLAN_STOP`** — `replanFrom.stopId` does not refer to a known stop in the session/plan.
+- **Slice 2 — unknown stop id:** `UNKNOWN_REPLAN_STOP` when `replanFrom.stopId` is not found in `previousStops`.
+- **Slice 2 — missing context:** `MISSING_PREVIOUS_STOPS` when `replanFrom.stopId` is used without a `previousStops` array (planner guard; prefer Zod validation first).
+- **Request shape (Zod):** e.g. both `start` and `replanFrom`, or neither — HTTP **400** with validation message.
 
 ### Privacy
 
-- `replanFrom.coords` carries device location. Do **not** log or persist raw lat/lon. Add runbook note when implementing.
+- **`replanFrom.coords`:** Do **not** log or persist raw lat/lon in production analytics; server logs use **`mode: "coords"`** only.
 
-### Testing (when implemented)
+### Testing
 
-- Add smoke cases to `TESTING.md` for `replanFrom.coords` and `replanFrom.stopId` (single-leg remainder).
+- **`TESTING.md`** — Slice 2 manual checks; **`node scripts/e2e-replan-smoke.mjs`** — automated coords + `stopId` + unknown id (spawns API; needs NREL/Valhalla/geocode like other E2E).
