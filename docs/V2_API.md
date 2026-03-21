@@ -48,5 +48,37 @@ v2 **does not** add a separate `GET` endpoint in the baseline implementation. Th
 - **Locked single-day trip too long:** `LOCKED_ROUTE_TOO_LONG`.
 - **Unknown / unplaceable hotel lock:** `UNKNOWN_HOTEL_LOCK`.
 
-## Roadmap (not implemented yet)
-- **`replanFrom` / mid-journey** modes — document when added; keep **`TESTING.md`** in sync.
+## Roadmap — Slice 2: `replanFrom` (design only)
+
+Mid-journey replan: user replans from **current location** or a **planned stop** to the original `end`. See **PRD.md** § *Mid-journey replan (Slice 2)* for scenario and privacy notes.
+
+### Request additions (draft)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `replanFrom` | `{ coords?: { lat: number; lon: number } } \| { stopId: string }` | **Mutually exclusive** with `start`. When present, the planner uses this as the new start; `end` and remaining `waypoints` define the remainder trip. |
+| `start` | string | **Omitted** when `replanFrom` is present. |
+| `end` | string | Required; unchanged for remainder planning. |
+| `waypoints` | string[] | Optional; only **remaining** waypoints (those after the new start). |
+
+**Rules**
+
+- Exactly one of `start` or `replanFrom` must be present.
+- With `replanFrom.stopId`, the server looks up the stop in the **last plan context** (session) or rejects with `UNKNOWN_REPLAN_STOP`. *(Implementation may require `planId` or session token; TBD.)*
+- `lockedChargersByLeg` / `lockedHotelId` apply to legs **after** the new start; array lengths must match remainder leg count.
+
+### Response
+
+- Same `PlanTripResponse` shape as Slice 1. Stops and legs describe the **remainder** trip only.
+
+### New error codes
+
+- **`UNKNOWN_REPLAN_STOP`** — `replanFrom.stopId` does not refer to a known stop in the session/plan.
+
+### Privacy
+
+- `replanFrom.coords` carries device location. Do **not** log or persist raw lat/lon. Add runbook note when implementing.
+
+### Testing (when implemented)
+
+- Add smoke cases to `TESTING.md` for `replanFrom.coords` and `replanFrom.stopId` (single-leg remainder).

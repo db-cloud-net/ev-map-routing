@@ -7,6 +7,6 @@ Baseline v2 ships **waypoints + along-route candidates** embedded in `POST /plan
 | Saved trips / accounts | New doc under `docs/designs/` + API sketch |
 | Shareable plan links | Same + privacy review |
 | Public API versioning / rate limits | `docs/V2_API.md` + ops runbook |
-| TSP / auto-reorder waypoints | PRD non-goal unless promoted; perf + QA implications |
+| TSP / auto-reorder waypoints | **[ROUTING_UX_SPEC.md](./ROUTING_UX_SPEC.md)** §1/§4 define intent; implementation gated until time-box + perf + QA; see **PRD.md** § *Routing optimization* |
 
 **Rule:** do not implement gated items in the same PR as baseline v2 without the above.

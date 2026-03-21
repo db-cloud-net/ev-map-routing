@@ -41,8 +41,13 @@ For non-secret QA defaults, prefer documenting them in this file and/or using th
 | `PLAN_GEOCODE_TIMEOUT_MS` | `30000` | Nominatim fetch per start/end geocode (`api/src/services/geocode.ts`) |
 | `PLAN_VALHALLA_POLYLINE_TIMEOUT_MS` | `60000` | First Valhalla `/route` for corridor polyline (`getRoutePolyline`) |
 | `PLAN_VALHALLA_LEG_TIMEOUT_MS` | `30000` | Each Valhalla `/route` in the segment solver (`getTravelTimeMinutes` / `getTravelDistanceMiles`) |
+| `VALHALLA_BASE_URL` | `http://valhalla:8002` (code default) | Valhalla origin (port usually **8002**). See **[docs/VALHALLA.md](docs/VALHALLA.md)**. |
 | `NREL_FETCH_TIMEOUT_MS` | `60000` | Each NREL nearest-point / route request (`RemoteNrelAdapter`; passed as abort budget per call) |
 | `OVERPASS_FETCH_TIMEOUT_MS` | `60000` | Each Overpass hotel query (`RemoteOverpassAdapter`) |
+
+**`debug.providerCalls` (MVP):** On successful and many error responses, `debug` includes **`providerCalls`** — per upstream **`valhalla`**, **`nrel`**, **`overpass`**, and **`geocode`** (Nominatim): **`calls`**, **`totalMs`**, **`avgMs`**, and **`durationsMs`** (per HTTP request; list truncated after 200 entries with a tail marker). Implemented in **`api/src/services/providerCallMetrics.ts`** and merged in **`api/src/server.ts`**.
+
+**Planner stdout (when `PLAN_LOG_REQUESTS` is not `false`):** Corridor sampling logs **`provider_valhalla_polyline`** on success. If Valhalla’s `/route` fails, **`provider_valhalla_polyline_failed`** includes **`durationMs`** (real attempt time) and **`error`**; then **`provider_valhalla_polyline_fallback`** includes **`valhallaAttemptMs`** (same as failed attempt), **`fallbackBuildMs`** (local straight-line sampling only, usually under 1 ms), **`corridorSamplesUsed`**, and **`approxMiles`**. See **`api/src/planner/planTripOneLeg.ts`**.
 
 ### Production (public URL + CORS)
 

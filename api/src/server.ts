@@ -3,6 +3,7 @@ import { z } from "zod";
 import { randomUUID } from "crypto";
 import { planTrip } from "./planner/planTrip";
 import { withTimeout } from "./planTimeout";
+import { ProviderCallMetrics, runPlanWithProviderMetrics } from "./services/providerCallMetrics";
 import path from "path";
 import { existsSync } from "fs";
 
@@ -84,6 +85,7 @@ app.post("/plan", async (req, res) => {
     (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
   const startedAt = Date.now();
   let responseVersion = "mvp-1";
+  let providerMetrics: ProviderCallMetrics | undefined;
 
   try {
     const parsed = planSchema.parse(req.body);
@@ -109,19 +111,22 @@ app.post("/plan", async (req, res) => {
       })
     );
     const totalMs = Number(process.env.PLAN_TOTAL_TIMEOUT_MS ?? 120000);
-    const result = await withTimeout(
-      planTrip({
-        requestId,
-        start: parsed.start,
-        end: parsed.end,
-        responseVersion,
-        waypoints: parsed.waypoints,
-        includeCandidates: parsed.includeCandidates,
-        lockedChargersByLeg: parsed.lockedChargersByLeg,
-        lockedHotelId: parsed.lockedHotelId
-      }),
-      totalMs,
-      `Planner exceeded time limit (${totalMs}ms). Try a shorter route or retry later.`
+    providerMetrics = new ProviderCallMetrics();
+    const result = await runPlanWithProviderMetrics(providerMetrics, () =>
+      withTimeout(
+        planTrip({
+          requestId,
+          start: parsed.start,
+          end: parsed.end,
+          responseVersion,
+          waypoints: parsed.waypoints,
+          includeCandidates: parsed.includeCandidates,
+          lockedChargersByLeg: parsed.lockedChargersByLeg,
+          lockedHotelId: parsed.lockedHotelId
+        }),
+        totalMs,
+        `Planner exceeded time limit (${totalMs}ms). Try a shorter route or retry later.`
+      )
     );
     console.log(
       JSON.stringify({
@@ -135,7 +140,13 @@ app.post("/plan", async (req, res) => {
         overnightStopsCount: result.totals?.overnightStopsCount ?? 0
       })
     );
-    res.status(result.status === "ok" ? 200 : 400).json(result);
+    res.status(result.status === "ok" ? 200 : 400).json({
+      ...result,
+      debug: {
+        ...(result.debug ?? {}),
+        ...providerMetrics.toDebugPayload()
+      }
+    });
   } catch (err) {
     const isTimeout =
       err instanceof Error &&
@@ -154,6 +165,10 @@ app.post("/plan", async (req, res) => {
     const msg =
       err instanceof Error ? err.message : "Unexpected error planning trip";
     const statusCode = isTimeout ? 408 : 400;
+    const errorDebug = {
+      ...(isTimeout ? { reason: "planner_timeout" } : {}),
+      ...(providerMetrics?.toDebugPayload() ?? {})
+    };
     res.status(statusCode).json({
       requestId,
       responseVersion,
@@ -161,12 +176,13 @@ app.post("/plan", async (req, res) => {
       message: msg,
       stops: [],
       legs: [],
-      debug: isTimeout ? { reason: "planner_timeout" } : undefined,
+      debug: Object.keys(errorDebug).length > 0 ? errorDebug : undefined
     });
   }
 });
 
-const port = Number(process.env.PORT ?? "3000");
+// Default 3001 so Next.js can use 3000 (see README / TESTING.md).
+const port = Number(process.env.PORT ?? "3001");
 app.listen(port, () => {
   // eslint-disable-next-line no-console
   console.log(`api listening on :${port}`);

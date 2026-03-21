@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
 import type { ItineraryStop, PlanTripResponse } from "../../../../shared/types";
 
 export default function MapPage() {
@@ -73,6 +74,9 @@ export default function MapPage() {
     });
 
     map.addControl(new maplibregl.NavigationControl(), "top-right");
+    map.once("load", () => {
+      map.resize();
+    });
     mapRef.current = map;
   }, []);
 
@@ -126,13 +130,18 @@ export default function MapPage() {
       },
       { minLon: 180, maxLon: -180, minLat: 90, maxLat: -90 }
     );
-    map.fitBounds(
-      [
-        [bounds.minLon, bounds.minLat],
-        [bounds.maxLon, bounds.maxLat]
-      ],
-      { padding: 40, duration: 0 }
-    );
+    const spanLon = bounds.maxLon - bounds.minLon;
+    const spanLat = bounds.maxLat - bounds.minLat;
+    if (Number.isFinite(spanLon) && Number.isFinite(spanLat) && spanLon > 0 && spanLat > 0) {
+      map.fitBounds(
+        [
+          [bounds.minLon, bounds.minLat],
+          [bounds.maxLon, bounds.maxLat]
+        ],
+        { padding: 40, duration: 0 }
+      );
+    }
+    map.resize();
 
     // Route geometry.
     // MVP: expects the backend to return at least one leg geometry; if absent, draw straight segments between stops.
@@ -343,8 +352,17 @@ export default function MapPage() {
   }
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "420px 1fr", height: "100vh" }}>
-      <div style={{ padding: 16, borderRight: "1px solid #e5e5e5", overflow: "auto" }}>
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 420px) minmax(0, 1fr)",
+        gridTemplateRows: "minmax(0, 1fr)",
+        height: "100vh",
+        width: "100%",
+        overflow: "hidden"
+      }}
+    >
+      <div style={{ padding: 16, borderRight: "1px solid #e5e5e5", overflow: "auto", minHeight: 0 }}>
         <h1 style={{ margin: 0, fontSize: 20 }}>EV Travel Planner (v2)</h1>
         <p style={{ margin: "6px 0 0 0", fontSize: 12, color: "#555" }}>
           Along-route charger + hotel candidates (when returned by the API) appear as green / coral markers; the
@@ -562,7 +580,16 @@ export default function MapPage() {
           </div>
         ) : null}
       </div>
-      <div ref={mapEl} />
+      <div
+        ref={mapEl}
+        style={{
+          position: "relative",
+          width: "100%",
+          height: "100%",
+          minWidth: 0,
+          minHeight: 0
+        }}
+      />
     </div>
   );
 }

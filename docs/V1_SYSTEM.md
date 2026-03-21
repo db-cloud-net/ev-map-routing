@@ -57,7 +57,7 @@ flowchart LR
 |---------|------|--------|
 | **NREL** | DC-fast (or broader) chargers along corridor | `NREL_API_KEY`, `NREL_FETCH_TIMEOUT_MS`, … |
 | **Overpass** | Hotel POIs (e.g. Holiday Inn Express query family in refresh) | `OVERPASS_FETCH_TIMEOUT_MS`, … |
-| **Valhalla** | Route polyline + leg times/distances | `VALHALLA_BASE_URL` |
+| **Valhalla** | Route polyline + leg times/distances | `VALHALLA_BASE_URL` (see **[docs/VALHALLA.md](./VALHALLA.md)**) |
 | **Nominatim** | Geocoding | `PLAN_GEOCODE_TIMEOUT_MS`, `NOMINATIM_*` |
 
 ---

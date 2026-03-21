@@ -121,20 +121,29 @@ export async function planTripOneLegFromCoords(
       (process.env.USE_NREL_NEARBY_ROUTE ?? "false").toLowerCase() === "true";
 
     let samplePoints: LatLng[] = [];
+    const polyT0 = Date.now();
     try {
-      const polyT0 = Date.now();
       const poly = await getRoutePolyline(startCoords, endCoords);
+      const valhallaMs = Date.now() - polyT0;
       samplePoints = samplePointsAlongPolyline(
         poly as { type: "LineString"; coordinates: [number, number][] },
         stepMiles,
         maxCorridorSamples
       );
       logEvent("provider_valhalla_polyline", {
-        durationMs: Date.now() - polyT0,
+        durationMs: valhallaMs,
         corridorSamplesUsed: samplePoints.length
       });
-    } catch {
-      // Fallback to straight-line sampling if Valhalla geometry isn't available yet.
+    } catch (e) {
+      // Time includes the failed Valhalla `/route` attempt (network, timeout, bad response, etc.).
+      const valhallaAttemptMs = Date.now() - polyT0;
+      const errMsg = e instanceof Error ? e.message : String(e);
+      logEvent("provider_valhalla_polyline_failed", {
+        durationMs: valhallaAttemptMs,
+        error: errMsg.length > 300 ? `${errMsg.slice(0, 300)}…` : errMsg
+      });
+
+      // Fallback to straight-line sampling if Valhalla geometry isn't available.
       const fallbackT0 = Date.now();
       const approxMiles = haversineMiles(startCoords, endCoords);
       // Ensure we still respect CORRIDOR_MAX_SAMPLE_POINTS in fallback mode,
@@ -146,8 +155,10 @@ export async function planTripOneLegFromCoords(
         samplePoints.push(interpolateLatLng(startCoords, endCoords, t));
       }
       logEvent("provider_valhalla_polyline_fallback", {
-        durationMs: Date.now() - fallbackT0,
-        corridorSamplesUsed: samplePoints.length
+        valhallaAttemptMs,
+        fallbackBuildMs: Date.now() - fallbackT0,
+        corridorSamplesUsed: samplePoints.length,
+        approxMiles: Math.round(approxMiles * 10) / 10
       });
     }
 

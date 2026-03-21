@@ -10,7 +10,20 @@
 
 1. **Commit / PR** — Working tree is **large** (mirror + v2 + locks). Prefer **splitting**: one PR for **Slice 1 locks** only (`shared/types`, `api/src/planner/planTrip*.ts`, `lockValidation`, `planTripOneLegLocked`, `server`, `web/map`, `docs/V2_API`, `TESTING`, `.env.example`) vs **mirror** / other files — or **one PR** with a clear commit message per theme.
 2. **Manual verify** — **`TESTING.md`** § *Version 2 smoke* + step **5** (locks). Single‑segment: `/map` → plan with candidates → tap charger(s) → replan; confirm `errorCode` on unknown id.
-3. **Then** — **Slice 2** (optional): PRD sketch for **`replanFrom` / mid-journey** (`TODOS.md` backlog below). **Slice 3** `GET /candidates` stays gated per **`docs/V2_CHERRY_PICKS.md`**.
+3. **Then** — **Slice 2** design **done** (PRD § *Mid-journey replan* + **`docs/V2_API.md`** § *Roadmap — Slice 2*). Implementation gated until approved. **Slice 3** `GET /candidates` stays gated per **`docs/V2_CHERRY_PICKS.md`**.
+
+### Build & test priority (rolling)
+
+Use this order when choosing what to run or build next. **Higher = do sooner; lower = roadmap / on-demand.**
+
+| Tier | What | Why |
+|------|------|-----|
+| **P0 — every PR / merge** | `npm -w api run build`; **`npm run qa:smoke`** (see [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md)); add **`npm -w web run build`** if the web app changed | Catches compile breaks + core E2E without Docker/Valhalla in CI. |
+| **P1 — Slice 1 exit / locks confidence** | [`TESTING.md`](TESTING.md) § *Version 2 smoke* + **step 5** (locks); **Phase 1 exit** (replan 5×, Raleigh→Greensboro) if still unchecked; optional **automated E2E** for lock `errorCode` paths; **multi-leg + locks** via API manual or `SPAWN_SERVER` E2E (map UI is single-segment) | Proves shipped V2 locks + UI contract before moving on. |
+| **P2 — mirror / deploy / NAS** | [`docs/d1-runbook.md`](docs/d1-runbook.md), `scripts/d1-verify-mirror.mjs`, mirror C4 scripts — **when** changing mirror, Docker compose, or source routing | Per [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md): not the default PR gate; run before release or infra changes. |
+| **P3 — ROUTING_UX roadmap** | Progressive **~60s** first screen + refinements (**new API shape** + UI states); mirror **fail closed** for `/plan` per [`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md) §2; **Slice 2** `replanFrom`; **Slice 3** `GET /candidates` | Spec is frozen; implementation is **after** P0–P2 baseline is green unless explicitly pulled forward. |
+
+**Quick command reference:** `npm run qa:smoke` · `node scripts/e2e-plan-functional.mjs` · `SPAWN_SERVER=true …` per **`TESTING.md`**.
 
 ---
 
@@ -31,6 +44,25 @@
 - **Per-stage `/plan` budgets:** See **`TESTING.md`** env matrix (`PLAN_TOTAL_TIMEOUT_MS`, `PLAN_GEOCODE_TIMEOUT_MS`, `PLAN_VALHALLA_POLYLINE_TIMEOUT_MS`, `PLAN_VALHALLA_LEG_TIMEOUT_MS`, `NREL_FETCH_TIMEOUT_MS`, `OVERPASS_FETCH_TIMEOUT_MS`); tune per SLO.
 - **Phase 3:** **`npm run qa:smoke`** covers API build + fast E2E; **`browse.exe`** / UI under WSL may still need **Bun CLI** fallback (documented in **`TESTING.md`**).
 - **Overnight E2E:** HIE scenario is reliable when run with **`SPAWN_SERVER=true`** (per-case env); smoke-only run against a long-running dev API can **false-fail** (documented in **`TESTING.md`**).
+
+---
+
+## Release backlog — observability + charge-time UX (this release)
+
+### Provider call metrics (backlog)
+
+**Goal:** See where `/plan` time goes and tune timeouts with data (e.g. long Raleigh→Seattle runs).
+
+- [x] **Valhalla / NREL / Overpass / geocode** — **`debug.providerCalls`** on **`POST /plan`** responses: **calls**, **totalMs**, **avgMs**, **durationsMs** per provider (`api/src/services/providerCallMetrics.ts`, clients, **`server.ts`** merge). Map **Debug (MVP)** shows JSON.
+- [ ] **Structured logs** — Optional: emit the same totals on **`requestId`** log lines for aggregation without loading the UI.
+- [x] **Docs** — **`TESTING.md`** § per-stage timeouts + **`debug.providerCalls`** note.
+
+### Charge times in turn-by-turn (expectation vs UI)
+
+**What you’re seeing:** Values like **2 / 8 / 19 minutes** are **modeled** `chargeTimeMinutes` on each **leg** in the least-time solver — roughly “time charging at the **from** stop to add enough energy for the **to** hop,” using the planner’s simplified energy model **not** real charger power curves, taper, or “minutes to 80%.”
+
+- Short “charge” segments can be **small top-ups** before a short drive; long drives after a stop can follow a **large** modeled charge — variance is expected.
+- **Not a bug by itself** unless we claim wall-clock realism; **backlog:** clarify UI copy (e.g. *Est. charge time (model)*) and/or **PRD** a richer model (kW, battery size, SoC bands) if product wants realism.
 
 ---
 
@@ -91,7 +123,7 @@
 
 | Slice | What | Status |
 |-------|------|--------|
-| **Slice 2** | Mid-journey / **`replanFrom`** (PRD + API sketch) | **Next** — optional |
+| **Slice 2** | Mid-journey / **`replanFrom`** (PRD + API sketch) | **Design done** — implementation gated |
 | **Slice 3** | **`GET /candidates`** | Gated — **`docs/V2_CHERRY_PICKS.md`** / product call |
 
 ---

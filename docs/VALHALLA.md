@@ -1,0 +1,41 @@
+# Valhalla — URL and port (source of truth)
+
+The planner talks to Valhalla over HTTP at **`VALHALLA_BASE_URL`** (no path; requests use **`POST /route`**, health check **`GET /status`**).
+
+## Port
+
+- **Default Valhalla HTTP port is `8002`** (container image, most NAS/Docker setups).
+- Do **not** assume **`:800`** unless you explicitly mapped that on the host and confirmed it.
+
+## Defaults (consistent everywhere)
+
+| Place | Value |
+|-------|--------|
+| Code fallback (no env) | **`http://valhalla:8002`** — `DEFAULT_VALHALLA_BASE_URL` in **`api/src/config/valhallaBaseUrl.ts`** |
+| **`docker-compose.mirror.yml`** | `${VALHALLA_BASE_URL:-http://valhalla:8002}` |
+| **`.env.example`** | `http://localhost:8002` for laptop + local Valhalla |
+
+Override with **`VALHALLA_BASE_URL`** in **`.env`** when the planner runs somewhere that cannot use those hostnames.
+
+## Where the API runs
+
+| Planner runs on | Typical `VALHALLA_BASE_URL` |
+|-----------------|----------------------------|
+| **Docker** on same network as Valhalla | `http://valhalla:8002` (service name) |
+| **Windows/macOS** hitting Valhalla on a **NAS** | `http://<NAS-LAN-IP>:8002` (confirm with `GET /status`) |
+| **Local** Valhalla on same machine | `http://127.0.0.1:8002` or `http://localhost:8002` |
+
+## Verify reachability
+
+```powershell
+Invoke-RestMethod -Uri "http://<host>:8002/status" -Method Get
+```
+
+Then set **`VALHALLA_BASE_URL`** to **exactly** that origin (scheme + host + port).
+
+## Related env (timeouts only)
+
+- **`PLAN_VALHALLA_POLYLINE_TIMEOUT_MS`** — first corridor `/route`
+- **`PLAN_VALHALLA_LEG_TIMEOUT_MS`** — per-leg `/route` in the segment solver  
+
+See **`TESTING.md`**.

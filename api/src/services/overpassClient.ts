@@ -1,4 +1,5 @@
 import type { LatLng } from "../types";
+import { timeProviderCall } from "./providerCallMetrics";
 
 export type Hotel = {
   id: string;
@@ -101,18 +102,20 @@ out center tags;`;
     await sleepMs(interRequestDelayMs, signal);
 
     try {
-      const resp = await fetch(overpassUrl, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain" },
-        body: q,
-        signal
+      const json = await timeProviderCall("overpass", async () => {
+        const resp = await fetch(overpassUrl, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: q,
+          signal
+        });
+
+        if (!resp.ok) {
+          throw new OverpassError(`Overpass request failed (${resp.status})`);
+        }
+
+        return (await resp.json()) as any;
       });
-
-      if (!resp.ok) {
-        throw new OverpassError(`Overpass request failed (${resp.status})`);
-      }
-
-      const json = (await resp.json()) as any;
       const elements: any[] = Array.isArray(json?.elements) ? json.elements : [];
 
       const hotels: Hotel[] = [];

@@ -14,7 +14,7 @@ services:
       DEPLOYMENT_ENV: production
       SOURCE_ROUTING_MODE: local_primary_fallback_remote
       MIRROR_ROOT: /mirror
-      # Valhalla routing — must be reachable from this container (same Docker network, or host/LAN URL).
+      # Valhalla — default matches api/src/config/valhallaBaseUrl.ts and docs/VALHALLA.md
       VALHALLA_BASE_URL: ${VALHALLA_BASE_URL:-http://valhalla:8002}
       # NREL_API_KEY: set in `.env` (loaded via env_file above)
       # Optional: enable rollback switch without rebuild.

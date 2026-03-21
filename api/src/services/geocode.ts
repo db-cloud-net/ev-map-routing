@@ -1,4 +1,5 @@
 import type { LatLng } from "../types";
+import { timeProviderCall } from "./providerCallMetrics";
 
 export class GeocodeError extends Error {
   constructor(message: string) {
@@ -29,11 +30,18 @@ export async function geocodeTextToLatLng(query: string): Promise<LatLng> {
     url.searchParams.set("limit", "1");
 
     let resp: Response;
+    let json: Array<any>;
     try {
-      resp = await fetch(url.toString(), {
-        headers: { "User-Agent": userAgent },
-        signal
+      const bundle = await timeProviderCall("geocode", async () => {
+        const r = await fetch(url.toString(), {
+          headers: { "User-Agent": userAgent },
+          signal
+        });
+        const j = (await r.json()) as Array<any>;
+        return { r, j };
       });
+      resp = bundle.r;
+      json = bundle.j;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const name = e instanceof Error ? e.name : "";
@@ -54,8 +62,6 @@ export async function geocodeTextToLatLng(query: string): Promise<LatLng> {
       await sleep(250 * (i + 1));
       continue;
     }
-
-    const json = (await resp.json()) as Array<any>;
     const first = json?.[0];
     if (!first?.lat || !first?.lon) throw new GeocodeError(`No geocode match for "${query}"`);
 

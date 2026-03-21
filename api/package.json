@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "commonjs",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "dev": "ts-node-dev --respawn --transpile-only --exit-child src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/api/src/server.js",
     "mirror:refresh": "ts-node-dev --respawn --transpile-only src/mirror/refreshSnapshot.ts",

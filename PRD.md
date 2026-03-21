@@ -76,7 +76,7 @@ These environment variables control the planner’s invariant-based behavior and
   - Requirement linkage: controls whether the corridor is sampled via route polyline vs straight/approx sampling.
 
 ### Valhalla leg modeling / feasibility (external integration tuning)
-- `VALHALLA_BASE_URL=http://192.168.86.38:8002`
+- `VALHALLA_BASE_URL` — e.g. `http://<nas-lan-ip>:8002` or `http://localhost:8002` (see **[docs/VALHALLA.md](docs/VALHALLA.md)**; default port is **8002**)
   - Requirement linkage: Valhalla is used to fetch route geometry for corridor sampling and/or leg timing.
 - `USE_VALHALLA_DISTANCE_FEASIBILITY=false`
   - Requirement linkage: influences feasibility checks (distance vs other feasibility signals).
@@ -210,14 +210,52 @@ Repo hygiene requirement (before running `/qa`):
 
 **Normative API + types:** see **[docs/V2_API.md](docs/V2_API.md)**. **Optional** features: omitting v2 fields preserves **v1 A→B** behavior and existing QA invariants.
 
+**Routing / UX direction (frozen):** **[docs/ROUTING_UX_SPEC.md](docs/ROUTING_UX_SPEC.md)** — optimization objectives, ~60s first screen, progressive refinements, local mirror + fail closed, confidence UX (not implementation detail).
+
+**Document precedence:** If this PRD and **[docs/ROUTING_UX_SPEC.md](docs/ROUTING_UX_SPEC.md)** disagree on **routing behavior** or **progressive UX**, the routing UX spec **wins**. This PRD remains authoritative for **QA invariants**, **environment variables**, and **API contract** pointers to **[docs/V2_API.md](docs/V2_API.md)** unless the routing spec explicitly replaces a policy.
+
 ### V2 goals
-1. **Along-route discovery:** users can see **charger** and **hotel** candidates on/near the corridor (map layers) using **server-returned candidate IDs** (same universe as planning). Picks must reference IDs the planner can consume (future: explicit locks in `POST /plan`).
+1. **Along-route discovery:** users can see **charger** and **hotel** candidates on/near the corridor (map layers) using **server-returned candidate IDs** (same universe as planning). Picks reference IDs the planner consumes via **`lockedChargersByLeg`** / **`lockedHotelId`** on **`POST /plan`** — see **[docs/V2_API.md](docs/V2_API.md)** (Slice 1).
 2. **Ordered multi-destination:** optional **`waypoints`** array (geocoded strings) between `start` and `end`. The planner **chains legs** sequentially; intermediate endpoints appear as **`waypoint`** stops in the itinerary.
 3. **Interactive adjustments (roadmap):** user-selected charge + overnight hotel + replan (constraints API) — **not fully specified here**; see `docs/V2_API.md` for request/response extensions and **docs/V2_CHERRY_PICKS.md** for gated extras.
 
+### Mid-journey replan (Slice 2 — design)
+
+**User scenario:** User is en route. They’ve driven part of the trip (or deviated) and want to replan **from their current location** to the original destination. The remainder trip should be planned with the same semantics (charger selection, overnight, locks) as a fresh plan, but starting from “here” instead of the original `start`.
+
+**Modes**
+
+| Mode | Input | Description |
+|------|-------|-------------|
+| `replanFrom.coords` | `{ lat, lon }` | Use device geolocation as the new start. Client obtains coords via Geolocation API. |
+| `replanFrom.stopId` | `{ stopId }` | Use a planned stop (charger, waypoint, hotel) from the previous plan as the new start. Coords derived from that stop. |
+
+**Semantics**
+
+- `end` and remaining `waypoints` stay as-is; `replanFrom` replaces `start` conceptually.
+- `lockedChargersByLeg` / `lockedHotelId` apply to the **remainder** legs only (leg indices shifted).
+- Response shape is the same (`stops`, `legs`, `totals`); it describes the remainder trip from the new start.
+- If `replanFrom.stopId` references a stop from a different plan or an unknown id, the API returns `UNKNOWN_REPLAN_STOP`.
+
+**Privacy**
+
+- `replanFrom.coords` is **sensitive**. The API must not log or persist raw lat/lon by default. Document in `docs/V2_API.md` and future runbooks.
+- Client must explicitly opt in (e.g. “Replan from my location” button) and obtain user consent before calling the Geolocation API.
+
+**Not in scope (Slice 2 design only)**
+
+- Automatic “you’re off-route, replan?” prompts.
+- Real-time position streaming or continuous replanning.
+- SOC / battery state as input (future enhancement).
+
+**Implementation gate:** Slice 2 is **design-only** until approved. No backend or UI changes until the API sketch is locked in and `TESTING.md` is updated.
+
 ### V2 non-goals (baseline)
 1. Deterministic routes across replans (still non-goal).
-2. Automatic TSP “reorder waypoints for shortest time” (cherry-pick / future).
+
+### Routing optimization (precedence: ROUTING_UX_SPEC)
+
+Waypoint **reordering** to minimize total time is **product direction** in **[docs/ROUTING_UX_SPEC.md](docs/ROUTING_UX_SPEC.md)** §1 and §4 — when implemented it must be **time-boxed** or **bounded** so early responses stay within the **~60s** / progressive model. Until then, **`waypoints`** remain **client-ordered** as in **[docs/V2_API.md](docs/V2_API.md)**. **Auto-reorder implementation** is **gated** — see **docs/V2_CHERRY_PICKS.md**.
 
 ### V2 configuration (environment)
 | Variable | Purpose |

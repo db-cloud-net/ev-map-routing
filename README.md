@@ -8,6 +8,9 @@
 | **[docs/README.md](./docs/README.md)** | Index of all docs. |
 | **[PRD.md](./PRD.md)** | Product requirements + QA-linked env knobs. |
 | **[TESTING.md](./TESTING.md)** | QA runners, timeouts, troubleshooting. |
+| **[docs/VALHALLA.md](./docs/VALHALLA.md)** | Valhalla **`VALHALLA_BASE_URL`** (port **8002**, NAS vs Docker). |
+| **[docs/MAP_AND_NAV.md](./docs/MAP_AND_NAV.md)** | Map line vs highways; turn-by-turn limits; path to road geometry. |
+| **[docs/ROUTING_UX_SPEC.md](./docs/ROUTING_UX_SPEC.md)** | **Routing/UX spec** — objectives, ~60s first screen, progressive refinements, mirror + fail closed. |
 | **[docs/CLOUDFLARE.md](./docs/CLOUDFLARE.md)** | Public HTTPS via Cloudflare Tunnel + CORS (production). |
 
 ## Manual testing (default: web **3000**, API **3001**)

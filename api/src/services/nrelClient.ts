@@ -1,4 +1,5 @@
 import type { LatLng } from "../types";
+import { timeProviderCall } from "./providerCallMetrics";
 
 export type Charger = {
   id: string;
@@ -161,20 +162,32 @@ export async function fetchDcFastChargersNearPoint(
 
     if (signal?.aborted) throw new NrelError("Aborted");
 
-    const resp = await fetch(url, { signal });
-    lastStatus = resp.status;
+    const nrelAttempt = await timeProviderCall("nrel", async () => {
+      const resp = await fetch(url, { signal });
+      lastStatus = resp.status;
 
-    if (resp.status === 429 && attempt < maxAttempts - 1) {
-      forcedDelayMs = parseRetryAfterMs(resp.headers.get("Retry-After"));
+      if (resp.status === 429 && attempt < maxAttempts - 1) {
+        return {
+          kind: "retry" as const,
+          retryAfter: resp.headers.get("Retry-After")
+        };
+      }
+
+      if (!resp.ok) {
+        throw new NrelError(`NREL charger fetch failed (${resp.status})`);
+      }
+
+      const json = (await resp.json()) as any;
+      return { kind: "ok" as const, json };
+    });
+
+    if (nrelAttempt.kind === "retry") {
+      forcedDelayMs = parseRetryAfterMs(nrelAttempt.retryAfter);
       // eslint-disable-next-line no-await-in-loop
       continue;
     }
 
-    if (!resp.ok) {
-      throw new NrelError(`NREL charger fetch failed (${resp.status})`);
-    }
-
-    const json = (await resp.json()) as any;
+    const json = nrelAttempt.json;
     const stations: any[] = Array.isArray(json?.fuel_stations)
       ? json.fuel_stations
       : Array.isArray(json?.stations)
@@ -257,20 +270,32 @@ export async function fetchElectricChargersNearPoint(
 
     if (signal?.aborted) throw new NrelError("Aborted");
 
-    const resp = await fetch(url, { signal });
-    lastStatus = resp.status;
+    const nrelAttempt = await timeProviderCall("nrel", async () => {
+      const resp = await fetch(url, { signal });
+      lastStatus = resp.status;
 
-    if (resp.status === 429 && attempt < maxAttempts - 1) {
-      forcedDelayMs = parseRetryAfterMs(resp.headers.get("Retry-After"));
+      if (resp.status === 429 && attempt < maxAttempts - 1) {
+        return {
+          kind: "retry" as const,
+          retryAfter: resp.headers.get("Retry-After")
+        };
+      }
+
+      if (!resp.ok) {
+        throw new NrelError(`NREL charger fetch failed (${resp.status})`);
+      }
+
+      const json = (await resp.json()) as any;
+      return { kind: "ok" as const, json };
+    });
+
+    if (nrelAttempt.kind === "retry") {
+      forcedDelayMs = parseRetryAfterMs(nrelAttempt.retryAfter);
       // eslint-disable-next-line no-await-in-loop
       continue;
     }
 
-    if (!resp.ok) {
-      throw new NrelError(`NREL charger fetch failed (${resp.status})`);
-    }
-
-    const json = (await resp.json()) as any;
+    const json = nrelAttempt.json;
     const stations: any[] = Array.isArray(json?.fuel_stations)
       ? json.fuel_stations
       : [];
@@ -364,28 +389,40 @@ export async function fetchDcFastChargersNearRoute(
 
     // Prefer GET first: it works reliably for small route strings.
     // Fall back to POST when URL length would be excessive.
-    const resp =
-      fullGetUrl.length <= maxGetUrlLength
-        ? await fetch(fullGetUrl, { signal })
-        : await fetch(baseUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: params,
-            signal
-          });
-    lastStatus = resp.status;
+    const nrelAttempt = await timeProviderCall("nrel", async () => {
+      const resp =
+        fullGetUrl.length <= maxGetUrlLength
+          ? await fetch(fullGetUrl, { signal })
+          : await fetch(baseUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: params,
+              signal
+            });
+      lastStatus = resp.status;
 
-    if (resp.status === 429 && attempt < maxAttempts - 1) {
-      forcedDelayMs = parseRetryAfterMs(resp.headers.get("Retry-After"));
+      if (resp.status === 429 && attempt < maxAttempts - 1) {
+        return {
+          kind: "retry" as const,
+          retryAfter: resp.headers.get("Retry-After")
+        };
+      }
+
+      if (!resp.ok) {
+        throw new NrelError(`NREL charger fetch failed (${resp.status})`);
+      }
+
+      const json = (await resp.json()) as any;
+      return { kind: "ok" as const, json };
+    });
+
+    if (nrelAttempt.kind === "retry") {
+      forcedDelayMs = parseRetryAfterMs(nrelAttempt.retryAfter);
       // eslint-disable-next-line no-await-in-loop
       continue;
     }
 
-    if (!resp.ok) {
-      throw new NrelError(`NREL charger fetch failed (${resp.status})`);
-    }
-
-    const json = (await resp.json()) as any;
+    const json = nrelAttempt.json;
     const stations: any[] = Array.isArray(json?.fuel_stations)
       ? json.fuel_stations
       : Array.isArray(json?.stations)

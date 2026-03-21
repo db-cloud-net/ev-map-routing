@@ -6,5 +6,7 @@ web/.next/
 api/dist/
 # Local mirror refresh output (keep manifests/runbooks in docs; avoid large NDJSON in git)
 api/mirror/snapshots/
+# Runtime lock while a mirror refresh is in progress (do not commit)
+api/mirror/**/refresh.lock
 .vscode/
 .tmp-screenshot2/
