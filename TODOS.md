@@ -2,17 +2,19 @@
 
 **Resume local mirror work:** [`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md) *(what’s done, next steps, file index — updated 2026-03-20).*
 
-## Current status (snapshot — **2026-03-19**)
+## Current status (snapshot — **2026-03-21**)
 
 **DRI:** David *(adjust if ownership changes)*
 
 **Manual QA:** **`TESTING.md`** § *Version 2 smoke* + locks (step 5) + **Phase 1 exit** (replan / Raleigh→Greensboro) — **completed** (2026-03-19).
 
+**P0 gate on `main` (pre–Slice 3):** `npm -w api run build` · `npm run qa:smoke` · `npm -w web run build` — **all green** (2026-03-21).
+
 ### Immediate next steps (pick one)
 
-1. **Commit / PR** — Push local **`main`** (or open PR) when ready; keep **theme commits** if splitting mirror vs planner vs docs.
+1. ~~**Commit / push**~~ — **`main`** pushed to origin (2026-03-21); dev API **ts-node-dev** listen stability in **`c07bf96`**.
 2. ~~**Manual verify**~~ — **Done** — see **Manual QA** above.
-3. **Then** — **Slice 2** **`replanFrom`** shipped (API + map UI + **`e2e-replan-smoke`**). **Slice 3** `GET /candidates` stays gated per **`docs/V2_CHERRY_PICKS.md`**.
+3. **Next** — **Slice 3** **`GET /candidates`** **spike** (still **gated** per **`docs/V2_CHERRY_PICKS.md`** + product call — add design note / PRD paragraph before shipping).
 
 ### Build & test priority (rolling)
 

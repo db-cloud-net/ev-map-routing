@@ -2,6 +2,8 @@
 
 **Status:** Decision record — adjust when dev-infra timing is fixed.
 
+**Last verified on `main` (2026-03-21):** `npm -w api run build` · `npm run qa:smoke` · `npm -w web run build` — all pass *(local)*.
+
 ## Goals
 
 - Catch TypeScript / build breaks before merge.
