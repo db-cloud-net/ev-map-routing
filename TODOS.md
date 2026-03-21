@@ -2,14 +2,16 @@
 
 **Resume local mirror work:** [`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md) *(what’s done, next steps, file index — updated 2026-03-20).*
 
-## Current status (snapshot — **2026-03-20**)
+## Current status (snapshot — **2026-03-19**)
 
 **DRI:** David *(adjust if ownership changes)*
 
+**Manual QA:** **`TESTING.md`** § *Version 2 smoke* + locks (step 5) + **Phase 1 exit** (replan / Raleigh→Greensboro) — **completed** (2026-03-19).
+
 ### Immediate next steps (pick one)
 
-1. **Commit / PR** — Working tree is **large** (mirror + v2 + locks). Prefer **splitting**: one PR for **Slice 1 locks** only (`shared/types`, `api/src/planner/planTrip*.ts`, `lockValidation`, `planTripOneLegLocked`, `server`, `web/map`, `docs/V2_API`, `TESTING`, `.env.example`) vs **mirror** / other files — or **one PR** with a clear commit message per theme.
-2. **Manual verify** — **`TESTING.md`** § *Version 2 smoke* + step **5** (locks). Single‑segment: `/map` → plan with candidates → tap charger(s) → replan; confirm `errorCode` on unknown id.
+1. **Commit / PR** — Push local **`main`** (or open PR) when ready; keep **theme commits** if splitting mirror vs planner vs docs.
+2. ~~**Manual verify**~~ — **Done** — see **Manual QA** above.
 3. **Then** — **Slice 2** design **done** (PRD § *Mid-journey replan* + **`docs/V2_API.md`** § *Roadmap — Slice 2*). Implementation gated until approved. **Slice 3** `GET /candidates` stays gated per **`docs/V2_CHERRY_PICKS.md`**.
 
 ### Build & test priority (rolling)
@@ -93,7 +95,7 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 **Depends on:** pre-Slice 1 checklist above (done). **PR split:** still recommended if committing mirror + v2 together.
 
 ### Slice 1 — contracts + types
-- [ ] **Owner:** David  **Task:** **`PRD.md`** — add a short **§** on locks (limits, UX, single-segment map UI vs API multi-leg) — *V2_API is ahead of PRD here.*
+- [x] **Owner:** David  **Task:** **`PRD.md`** — locks + V2 goals documented (**§ Version 2**, **`lockedChargersByLeg`** / **`lockedHotelId`**, pointer to **`docs/V2_API.md`**); map remains single-segment for tap-to-lock in UI.
 - [x] **Owner:** David  **Task:** **`docs/V2_API.md`** — request fields, **error taxonomy**, semantics.
 - [x] **Owner:** David  **Task:** **`shared/types.ts`** — `lockedChargersByLeg`, `lockedHotelId`, `errorCode`.
 
@@ -138,8 +140,8 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 - [x] **Owner:** David  **Task:** UI error-contract behavior *(timeout / network / HTTP distinctions in `classifyPlanError`)*
 
 **Phase 1 exit criteria**
-- [ ] **Owner:** David  Re-plan map 5x in one session without stale markers/routes. *(Steps: **`TESTING.md` § Phase 1 exit verification (manual)** — check this box after you complete them.)*
-- [ ] **Owner:** David  `Raleigh -> Greensboro` succeeds consistently. *(Same §; **user env** must match **3000/3001 + CORS + clean `.next`** — check this box when satisfied.)*
+- [x] **Owner:** David  Re-plan map 5x in one session without stale markers/routes. *(Verified manual 2026-03-19; steps: **`TESTING.md` § Phase 1 exit verification**.)*
+- [x] **Owner:** David  `Raleigh -> Greensboro` succeeds consistently. *(Verified manual 2026-03-19; **3000/3001 + CORS + `.env`**.)*
 - [x] **Owner:** David  Long-haul requests return clear, classified failures (no generic `Failed to fetch` only — **improved**; providers can still fail for other reasons).
 - [x] **Owner:** David  `/plan` has explicit per-stage timeout budgets (`geocode`, `NREL`, `Overpass`, `Valhalla`) plus total request cap documented and enforced. *(**`PLAN_TOTAL_TIMEOUT_MS`** + per-stage envs in **`TESTING.md`**; geocode / Valhalla polyline+legs / NREL / Overpass.)*
 
