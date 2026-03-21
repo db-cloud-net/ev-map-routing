@@ -56,7 +56,7 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 **Goal:** See where `/plan` time goes and tune timeouts with data (e.g. long Raleigh→Seattle runs).
 
 - [x] **Valhalla / NREL / Overpass / geocode** — **`debug.providerCalls`** on **`POST /plan`** responses: **calls**, **totalMs**, **avgMs**, **durationsMs** per provider (`api/src/services/providerCallMetrics.ts`, clients, **`server.ts`** merge). Map **Debug (MVP)** shows JSON.
-- [ ] **Structured logs** — Optional: emit the same totals on **`requestId`** log lines for aggregation without loading the UI.
+- [x] **Structured logs** — **skipped** (2026-03-19); **`debug.providerCalls`** + UI Debug panel sufficient for now; revisit if aggregating without UI.
 - [x] **Docs** — **`TESTING.md`** § per-stage timeouts + **`debug.providerCalls`** note.
 
 ### Charge times in turn-by-turn (expectation vs UI)
@@ -105,8 +105,8 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 - [x] **Owner:** David  **Task:** **Performance guard** — **`V2_MAX_LOCKED_CHARGERS`** (`.env.example`, `lockValidation.ts`).
 
 ### Slice 1 — tests
-- [ ] **Owner:** David  **Task:** **Automated E2E** for unknown vs infeasible lock (*optional follow-up*; **`TESTING.md`** step 5 documents manual).
-- [ ] **Owner:** David  **Task:** **Multi-leg** lock API **manual** or E2E branch (*API supports; map UI is single-segment only*).
+- [x] **Owner:** David  **Task:** **Automated E2E** for unknown vs infeasible lock — **skipped** (2026-03-19); manual + **`TESTING.md`** step 5 sufficient for now.
+- [x] **Owner:** David  **Task:** **Multi-leg** lock API **manual** or E2E branch — **skipped** (2026-03-19); API supports; revisit when multi-leg map UX ships.
 - [x] **Owner:** David  **Task:** **`npm run qa:smoke`** green.
 
 ### Slice 1 — web (map)
@@ -115,9 +115,9 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 
 ### Slice 1 — exit criteria
 - [x] **Owner:** David  **Single-leg** — **manual** + **`TESTING.md`**.
-- [ ] **Owner:** David  **Multi-leg** + locks — **API** ready; **manual** or **E2E** when needed.
+- [x] **Owner:** David  **Multi-leg** + locks — **skipped** (2026-03-19); API ready; extra manual/E2E deferred with multi-leg UI.
 - [x] **Owner:** David  **Failure modes** — **`errorCode`** on responses; **`TESTING.md`** unknown-id repro.
-- [ ] **Owner:** David  **`V2_CHERRY_PICKS`** / **`CI_SCOPE`** — review if a **locks-only** PR touches platform docs; **no change required** for pure feature PR.
+- [x] **Owner:** David  **`V2_CHERRY_PICKS`** / **`CI_SCOPE`** — **skipped** (2026-03-19); no doc change needed for current ship; revisit if platform slice moves.
 
 ---
 
