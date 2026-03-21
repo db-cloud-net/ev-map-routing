@@ -1,16 +1,16 @@
 {
-  "snapshotId": "2026-03-20T14-51-45-460Z",
+  "snapshotId": "2026-03-21T02-50-37-327Z",
   "schemaVersion": "1.0.0",
-  "createdAt": "2026-03-20T14:51:45.460Z",
+  "createdAt": "2026-03-21T02:50:37.327Z",
   "builtBy": "snapshot-job",
   "sourceWindow": {
-    "nrelStartedAt": "2026-03-20T14:51:45.487Z",
-    "nrelCompletedAt": "2026-03-20T14:51:46.327Z",
-    "overpassStartedAt": "2026-03-20T14:51:46.329Z",
-    "overpassCompletedAt": "2026-03-20T14:51:52.816Z"
+    "nrelStartedAt": "2026-03-21T02:50:37.339Z",
+    "nrelCompletedAt": "2026-03-21T02:50:38.259Z",
+    "overpassStartedAt": "2026-03-21T02:50:38.261Z",
+    "overpassCompletedAt": "2026-03-21T02:50:39.122Z"
   },
   "counts": {
-    "chargers": 179,
+    "chargers": 199,
     "poiHotels": 0
   },
   "files": {
