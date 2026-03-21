@@ -4,6 +4,7 @@ import { z } from "zod";
 import { randomUUID } from "crypto";
 import { execSync } from "child_process";
 import { planTrip, planTripCandidatesOnly } from "./planner/planTrip";
+import { buildRoutePreviewSingleLeg } from "./planner/routePreview";
 import { withTimeout } from "./planTimeout";
 import { ProviderCallMetrics, runPlanWithProviderMetrics } from "./services/providerCallMetrics";
 import path from "path";
@@ -167,6 +168,101 @@ const candidatesSchema = z
       });
     }
   });
+
+const routePreviewSchema = z
+  .object({
+    start: z.string().min(1).max(200),
+    end: z.string().min(1).max(200),
+    waypoints: z.array(z.string().min(1).max(200)).max(24).optional()
+  })
+  .superRefine((data, ctx) => {
+    if (data.waypoints && data.waypoints.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "route-preview v1 supports single-leg trips only (omit waypoints).",
+        path: ["waypoints"]
+      });
+    }
+  });
+
+app.post("/route-preview", async (req, res) => {
+  const requestId =
+    (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
+  const startedAt = Date.now();
+  const responseVersion = "v2-1-route-preview";
+  let providerMetrics: ProviderCallMetrics | undefined;
+
+  try {
+    const parsed = routePreviewSchema.parse(req.body);
+    console.log(
+      JSON.stringify({
+        event: "route_preview_request_start",
+        deploymentEnv,
+        requestId,
+        responseVersion,
+        start: parsed.start,
+        end: parsed.end
+      })
+    );
+    const totalMs = Number(process.env.ROUTE_PREVIEW_TOTAL_TIMEOUT_MS ?? "90000");
+    providerMetrics = new ProviderCallMetrics();
+    const result = await runPlanWithProviderMetrics(providerMetrics, () =>
+      withTimeout(
+        buildRoutePreviewSingleLeg({
+          requestId,
+          start: parsed.start,
+          end: parsed.end
+        }),
+        totalMs,
+        `Route preview exceeded time limit (${totalMs}ms). Try a shorter corridor or retry later.`
+      )
+    );
+    console.log(
+      JSON.stringify({
+        event: "route_preview_request_end",
+        deploymentEnv,
+        requestId,
+        responseVersion,
+        status: result.status,
+        durationMs: Date.now() - startedAt,
+        previewManeuvers: result.preview?.horizon.maneuvers.length ?? 0
+      })
+    );
+    res.status(result.status === "ok" ? 200 : 400).json({
+      ...result,
+      debug: providerMetrics.toDebugPayload()
+    });
+  } catch (err) {
+    const isTimeout =
+      err instanceof Error &&
+      /exceeded time limit|timed out|ECONNABORTED/i.test(err.message);
+    console.log(
+      JSON.stringify({
+        event: "route_preview_request_error",
+        deploymentEnv,
+        requestId,
+        responseVersion,
+        durationMs: Date.now() - startedAt,
+        message: err instanceof Error ? err.message : String(err),
+        timeout: isTimeout
+      })
+    );
+    const msg =
+      err instanceof Error ? err.message : "Unexpected error building route preview";
+    const statusCode = isTimeout ? 408 : 400;
+    const errorDebug = {
+      ...(isTimeout ? { reason: "route_preview_timeout" } : {}),
+      ...(providerMetrics?.toDebugPayload() ?? {})
+    };
+    res.status(statusCode).json({
+      requestId,
+      responseVersion,
+      status: "error",
+      message: msg,
+      debug: Object.keys(errorDebug).length > 0 ? errorDebug : undefined
+    });
+  }
+});
 
 app.post("/candidates", async (req, res) => {
   const requestId =

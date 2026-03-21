@@ -109,3 +109,31 @@ export type CandidatesApiResponse = Pick<
   debug?: Record<string, unknown>;
 };
 
+/** Slice 4 — fast road preview (single leg, no EV solver). Normative UX: ROUTING_UX_SPEC §3. */
+export type RoutePreviewPolyline = NonNullable<ItineraryLeg["geometry"]>;
+
+export type RoutePreviewHorizon = {
+  /** Config used for this clip (minutes of driving time budget along the route). */
+  maxMinutes: number;
+  maneuvers: NonNullable<ItineraryLeg["maneuvers"]>;
+  /** Sum of `timeSeconds` on horizon maneuvers when present; else 0. */
+  cumulativeTimeSeconds: number;
+};
+
+export type RoutePreviewBody = {
+  polyline: RoutePreviewPolyline;
+  tripTimeMinutes: number;
+  tripDistanceMiles: number;
+  horizon: RoutePreviewHorizon;
+};
+
+export type RoutePreviewApiResponse = {
+  requestId: string;
+  responseVersion: "v2-1-route-preview";
+  status: "ok" | "error";
+  message?: string;
+  errorCode?: string;
+  preview?: RoutePreviewBody;
+  debug?: Record<string, unknown>;
+};
+

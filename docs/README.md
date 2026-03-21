@@ -8,9 +8,10 @@ Start here for **v2** or onboarding. Longer specs are linked, not duplicated.
 |----------|---------|
 | **[V1_SYSTEM.md](./V1_SYSTEM.md)** | **Minimal reconstruction guide** — what was built, how it fits together, how to run and validate it. |
 | [`../PRD.md`](../PRD.md) | Product requirements and QA-linked env knobs (overnight/hotel/charging invariants). |
-| [`V2_API.md`](./V2_API.md) | **v2** `POST /plan` additive fields (`waypoints`, `includeCandidates`, `candidates`, **locks**); **Slice 3** `POST /candidates` proposal. |
+| [`V2_API.md`](./V2_API.md) | **v2** `POST /plan` additive fields (`waypoints`, `includeCandidates`, `candidates`, **locks**); **Slice 3** `POST /candidates` (shipped). |
 | [`V2_CHERRY_PICKS.md`](./V2_CHERRY_PICKS.md) | Gated extras (saved trips, sharing, TSP) — not baseline v2. |
-| [`designs/slice3-get-candidates.md`](./designs/slice3-get-candidates.md) | **Slice 3 spike:** dedicated **`POST /candidates`** (progressive map UX; not implemented until rollout). |
+| [`designs/slice3-get-candidates.md`](./designs/slice3-get-candidates.md) | **Slice 3:** dedicated **`POST /candidates`** — **implemented**; see **`V2_API.md`** § Slice 3. |
+| [`designs/slice4-progressive-first-screen.md`](./designs/slice4-progressive-first-screen.md) | **Slice 4:** progressive **~60s** first screen — **Phase 1:** `POST /route-preview` (**`V2_API.md`** § Slice 4); map UI / refinements **TBD**. |
 | [`../README.md`](../README.md) | Repo root: dev quickstart, ports, scripts. |
 | [`../TESTING.md`](../TESTING.md) | QA matrix, E2E runners, per-stage `/plan` timeouts, manual checks. |
 | [`VALHALLA.md`](./VALHALLA.md) | **`VALHALLA_BASE_URL`** — port **8002**, Docker vs NAS vs localhost. |

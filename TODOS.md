@@ -2,19 +2,19 @@
 
 **Resume local mirror work:** [`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md) *(what’s done, next steps, file index — updated 2026-03-20).*
 
-## Current status (snapshot — **2026-03-21**)
+## Current status (snapshot — **2026-03-22**)
 
 **DRI:** David *(adjust if ownership changes)*
 
 **Manual QA:** **`TESTING.md`** § *Version 2 smoke* + locks (step 5) + **Phase 1 exit** (replan / Raleigh→Greensboro) — **completed** (2026-03-19).
 
-**P0 gate on `main` (pre–Slice 3):** `npm -w api run build` · `npm run qa:smoke` · `npm -w web run build` — **all green** (2026-03-21).
+**P0 gate on `main`:** `npm -w api run build` · `npm run qa:smoke` · `npm -w web run build` — **all green** (2026-03-21); re-run after substantive changes.
 
 ### Immediate next steps (pick one)
 
 1. ~~**Commit / push**~~ — **`main`** pushed to origin (2026-03-21); dev API **ts-node-dev** listen stability in **`c07bf96`**.
 2. ~~**Manual verify**~~ — **Done** — see **Manual QA** above.
-3. **Next** — **Slice 3** **`POST /candidates`** **shipped** (API + E2E + **map prefetch** via **`NEXT_PUBLIC_PREFETCH_CANDIDATES`**).
+3. **Next** — **Slice 3** **`POST /candidates`** **shipped**; **Slice 4 Phase 1** **`POST /route-preview`** **shipped** (Valhalla preview + horizon clip + E2E; **no map UI**). **Product / UX focus:** **[`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md)** — **§3** refinements + **§5** safety on map; **design:** **[`docs/designs/slice4-progressive-first-screen.md`](docs/designs/slice4-progressive-first-screen.md)** Phase **2**. **§2** mirror + **fail closed** for **`/plan`**. **Platform (parallel):** **[`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md)**.
 
 ### Build & test priority (rolling)
 
@@ -23,9 +23,9 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 | Tier | What | Why |
 |------|------|-----|
 | **P0 — every PR / merge** | `npm -w api run build`; **`npm run qa:smoke`** (see [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md)); add **`npm -w web run build`** if the web app changed | Catches compile breaks + core E2E without Docker/Valhalla in CI. |
-| **P1 — Slice 1 exit / locks confidence** | [`TESTING.md`](TESTING.md) § *Version 2 smoke* + **step 5** (locks); **Phase 1 exit** (replan 5×, Raleigh→Greensboro) if still unchecked; optional **automated E2E** for lock `errorCode` paths; **multi-leg + locks** via API manual or `SPAWN_SERVER` E2E (map UI is single-segment) | Proves shipped V2 locks + UI contract before moving on. |
+| **P1 — Slice 1 exit / locks confidence** | [`TESTING.md`](TESTING.md) § *Version 2 smoke* + **step 5** (locks); **Phase 1 exit** (replan 5×, Raleigh→Greensboro); **`e2e-multileg-locks-smoke.mjs`** in **`npm run qa:smoke`** (multi-leg + `lockedChargersByLeg`; map UI stays single-segment for tap-to-lock) | Proves shipped V2 locks + UI contract before moving on. |
 | **P2 — mirror / deploy / NAS** | [`docs/d1-runbook.md`](docs/d1-runbook.md), `scripts/d1-verify-mirror.mjs`, mirror C4 scripts — **when** changing mirror, Docker compose, or source routing | Per [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md): not the default PR gate; run before release or infra changes. |
-| **P3 — ROUTING_UX roadmap** | Progressive **~60s** first screen + refinements (**new API shape** + UI states); mirror **fail closed** for `/plan` per [`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md) §2; **Slice 3** [`POST /candidates`](docs/designs/slice3-get-candidates.md) | Spec is frozen; implementation is **after** P0–P2 baseline is green unless explicitly pulled forward. |
+| **P3 — ROUTING_UX roadmap** | **§3** progressive **~60s** first screen + horizon TBT + refinements (**new API shape** + UI states); **§2** mirror-primary + **fail closed** for `/plan` — [`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md). **Slice 3** [`POST /candidates`](docs/designs/slice3-get-candidates.md) is **shipped**; next is §2–§3 execution, not another “slice 3” milestone. | Spec is frozen; §3/§2 implementation can proceed in parallel with **P2** mirror work where dependencies align. |
 
 **Quick command reference:** `npm run qa:smoke` · `node scripts/e2e-plan-functional.mjs` · `SPAWN_SERVER=true …` per **`TESTING.md`**.
 
@@ -108,7 +108,7 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 
 ### Slice 1 — tests
 - [x] **Owner:** David  **Task:** **Automated E2E** for unknown vs infeasible lock — **skipped** (2026-03-19); manual + **`TESTING.md`** step 5 sufficient for now.
-- [x] **Owner:** David  **Task:** **Multi-leg** lock API **manual** or E2E branch — **skipped** (2026-03-19); API supports; revisit when multi-leg map UX ships.
+- [x] **Owner:** David  **Task:** **Multi-leg** lock API **E2E** — [`scripts/e2e-multileg-locks-smoke.mjs`](scripts/e2e-multileg-locks-smoke.mjs) in **`npm run qa:smoke`** (2026-03-21); map tap-to-lock remains single-segment.
 - [x] **Owner:** David  **Task:** **`npm run qa:smoke`** green.
 
 ### Slice 1 — web (map)
@@ -117,7 +117,7 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 
 ### Slice 1 — exit criteria
 - [x] **Owner:** David  **Single-leg** — **manual** + **`TESTING.md`**.
-- [x] **Owner:** David  **Multi-leg** + locks — **skipped** (2026-03-19); API ready; extra manual/E2E deferred with multi-leg UI.
+- [x] **Owner:** David  **Multi-leg** + locks — **`e2e-multileg-locks-smoke.mjs`** covers API + **`INVALID_LOCK_LEGS`** (2026-03-21); map UI unchanged (single-segment locks).
 - [x] **Owner:** David  **Failure modes** — **`errorCode`** on responses; **`TESTING.md`** unknown-id repro.
 - [x] **Owner:** David  **`V2_CHERRY_PICKS`** / **`CI_SCOPE`** — **skipped** (2026-03-19); no doc change needed for current ship; revisit if platform slice moves.
 
@@ -128,7 +128,7 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 | Slice | What | Status |
 |-------|------|--------|
 | **Slice 2** | Mid-journey / **`replanFrom`** | **Implemented** — see **`docs/V2_API.md`**, **`TESTING.md`** |
-| **Slice 3** | **`POST /candidates`** | **Shipped** — see **[`docs/V2_API.md`](docs/V2_API.md)** § Slice 3; optional UI prefetch TBD |
+| **Slice 3** | **`POST /candidates`** | **Shipped** — see **[`docs/V2_API.md`](docs/V2_API.md)** § Slice 3; map **prefetch** on (**`NEXT_PUBLIC_PREFETCH_CANDIDATES`**, default on) |
 
 ---
 

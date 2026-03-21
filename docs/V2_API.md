@@ -91,3 +91,26 @@ User replans from **current** coordinates or a **planned stop** to **`end`** (an
 **Regression:** Baseline behavior unchanged: **`POST /plan`** with `includeCandidates` still returns candidates inside the plan response.
 
 **Web map:** The **`/map`** page may call **`POST /candidates`** in parallel with **`POST /plan`** (see **`NEXT_PUBLIC_PREFETCH_CANDIDATES`** in **`TESTING.md`**) so pins can render before the full plan returns.
+
+---
+
+## Slice 4 — progressive ~60s first screen
+
+**Product goals:** **[ROUTING_UX_SPEC.md](ROUTING_UX_SPEC.md)** §3–§5. **Design:** **[`docs/designs/slice4-progressive-first-screen.md`](designs/slice4-progressive-first-screen.md)**.
+
+### `POST /route-preview` (Phase 1 — single leg)
+
+Fast **Valhalla-only** preview: **no** EV least-time solver, **no** NREL/Overpass. Returns a **full-trip road polyline** plus a **time-budgeted** first-horizon maneuver list (see **`ROUTE_PREVIEW_*`** in **`.env.example`**).
+
+| | |
+|--|--|
+| **Method** | `POST /route-preview` |
+| **Body** | `{ "start": string, "end": string }` — **v1:** no `waypoints`, no `replanFrom` (omit multi-stop until a later phase). |
+| **Response** | `requestId`, `responseVersion`: **`v2-1-route-preview`**, `status`, optional `message` / **`errorCode`**, optional **`preview`** on success. |
+| **`preview` (ok)** | **`polyline`**: GeoJSON **LineString**; **`tripTimeMinutes`**, **`tripDistanceMiles`** (from Valhalla summary when present); **`horizon`**: `{ maxMinutes, maneuvers[], cumulativeTimeSeconds }` — clipped per **ROUTING_UX_SPEC** §3 guardrails. |
+
+**Error codes (non-exhaustive):** `GEOCODE_FAILED`, `VALHALLA_ROUTE_PREVIEW_FAILED`, `ROUTE_PREVIEW_NO_GEOMETRY`, `ROUTE_PREVIEW_FAILED`; validation: waypoints in v1 → HTTP **400**.
+
+**Testing:** `node scripts/e2e-route-preview-smoke.mjs` (spawn API; needs geocode + Valhalla like other E2E).
+
+**Web / map:** not wired by default — call when **`POST /plan`** is also in flight (Phase 2 UI).

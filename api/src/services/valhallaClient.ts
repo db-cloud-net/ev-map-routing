@@ -10,6 +10,87 @@ export class ValhallaError extends Error {
 }
 
 /** Initial `/route` polyline for corridor sampling (`planTrip`). */
+/**
+ * Decode Google-encoded polyline (Valhalla uses **precision 6** for JSON `shape` strings).
+ * Returns GeoJSON order: [lng, lat][].
+ */
+function decodeEncodedPolyline(encoded: string, precision: number): [number, number][] {
+  const factor = Math.pow(10, precision);
+  let index = 0;
+  let lat = 0;
+  let lng = 0;
+  const coordinates: [number, number][] = [];
+
+  while (index < encoded.length) {
+    let result = 0;
+    let shift = 0;
+    let b: number;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    const deltaLat = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+    lat += deltaLat;
+
+    result = 0;
+    shift = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    const deltaLng = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+    lng += deltaLng;
+
+    coordinates.push([lng / factor, lat / factor]);
+  }
+
+  return coordinates;
+}
+
+function shapeFieldToLineString(shape: unknown): ItineraryLeg["geometry"] | undefined {
+  if (shape == null) return undefined;
+
+  if (typeof shape === "string" && shape.length > 0) {
+    try {
+      const coords = decodeEncodedPolyline(shape, 6);
+      if (coords.length >= 2) {
+        return { type: "LineString", coordinates: coords };
+      }
+    } catch {
+      try {
+        const coords = decodeEncodedPolyline(shape, 5);
+        if (coords.length >= 2) {
+          return { type: "LineString", coordinates: coords };
+        }
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  if (typeof shape === "object" && shape !== null && "type" in shape) {
+    const s = shape as { type?: string; coordinates?: unknown };
+    if (s.type === "LineString" && Array.isArray(s.coordinates)) {
+      return { type: "LineString", coordinates: s.coordinates as [number, number][] };
+    }
+  }
+
+  if (Array.isArray(shape) && shape.length > 1) {
+    const coords = shape as any[];
+    if (coords.every((p) => Array.isArray(p) && p.length >= 2)) {
+      return {
+        type: "LineString",
+        coordinates: coords.map((p) => [p[0], p[1]])
+      };
+    }
+  }
+
+  return undefined;
+}
+
 function polylineAbortSignal(): AbortSignal | undefined {
   const ms = Number(process.env.PLAN_VALHALLA_POLYLINE_TIMEOUT_MS ?? "60000");
   return Number.isFinite(ms) && ms > 0 ? AbortSignal.timeout(Math.floor(ms)) : undefined;
@@ -203,6 +284,47 @@ export async function getTravelDistanceMiles(from: LatLng, to: LatLng): Promise<
   });
 }
 
+function parseValhallaRouteLegJson(json: any): {
+  geometry?: ItineraryLeg["geometry"];
+  maneuvers?: ItineraryLeg["maneuvers"];
+  tripTimeSeconds: number | null;
+  tripDistanceMiles: number | null;
+} {
+  const tripTimeSeconds = getTimeSecondsFromResponse(json);
+  const tripDistanceMiles = getDistanceMilesFromResponse(json);
+  const leg = json?.trip?.legs?.[0];
+  if (!leg) {
+    return { tripTimeSeconds, tripDistanceMiles };
+  }
+
+  const shape = leg?.shape ?? json?.trip?.shape;
+  const geometry = shapeFieldToLineString(shape);
+
+  const rawManeuvers = leg?.maneuvers ?? leg?.maneuver ?? [];
+  const parsedManeuvers: NonNullable<ItineraryLeg["maneuvers"]> = [];
+  if (Array.isArray(rawManeuvers)) {
+    for (const m of rawManeuvers) {
+      const text =
+        m?.instruction ?? m?.text ?? m?.name ?? m?.modifier ?? m?.sign ?? null;
+      if (typeof text === "string" && text.trim()) {
+        parsedManeuvers.push({
+          text: text.trim(),
+          instructionType: m?.instruction_type ?? m?.type,
+          distanceMeters: typeof m?.length === "number" ? m.length : undefined,
+          timeSeconds: typeof m?.time === "number" ? m.time : undefined
+        });
+      }
+    }
+  }
+
+  return {
+    geometry,
+    maneuvers: parsedManeuvers.length ? parsedManeuvers : undefined,
+    tripTimeSeconds,
+    tripDistanceMiles
+  };
+}
+
 export async function getRouteLegGeometryAndManeuvers(
   from: LatLng,
   to: LatLng
@@ -238,44 +360,65 @@ export async function getRouteLegGeometryAndManeuvers(
     }
 
     const json = await resp.json();
-    const leg = json?.trip?.legs?.[0];
-    if (!leg) return {};
+    const parsed = parseValhallaRouteLegJson(json);
+    return { geometry: parsed.geometry, maneuvers: parsed.maneuvers };
+  });
+}
 
-    // geometry
-    const shape = leg?.shape;
-    let geometry: ItineraryLeg["geometry"] | undefined;
-    if (shape?.type === "LineString" && Array.isArray(shape.coordinates)) {
-      geometry = { type: "LineString", coordinates: shape.coordinates };
-    } else if (Array.isArray(leg?.shape) && leg.shape.length > 1) {
-      // Some Valhalla configurations return coordinates directly.
-      const coords = leg.shape as any[];
-      if (coords.every((p) => Array.isArray(p) && p.length >= 2)) {
-        geometry = {
-          type: "LineString",
-          coordinates: coords.map((p) => [p[0], p[1]])
-        };
+/**
+ * Single Valhalla `/route` with directions + trip summary — for Slice 4 route preview (fast path, no EV solver).
+ * Uses the same polyline timeout budget as corridor polylines.
+ */
+export async function getRouteWithDirectionsAndSummary(
+  from: LatLng,
+  to: LatLng
+): Promise<{
+  geometry?: ItineraryLeg["geometry"];
+  maneuvers?: ItineraryLeg["maneuvers"];
+  tripTimeSeconds: number | null;
+  tripDistanceMiles: number | null;
+}> {
+  return timeProviderCall("valhalla", async () => {
+    const baseUrl = getValhallaBaseUrl();
+    const url = `${baseUrl}/route`;
+    const signal = polylineAbortSignal();
+
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal,
+        body: JSON.stringify({
+          locations: [
+            { lat: from.lat, lon: from.lon },
+            { lat: to.lat, lon: to.lon }
+          ],
+          costing: "auto",
+          directions: true,
+          directions_type: "maneuver",
+          units: "miles",
+          shape_format: "geojson"
+        })
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const name = e instanceof Error ? e.name : "";
+      if (name === "AbortError" || msg.toLowerCase().includes("abort")) {
+        const ms = process.env.PLAN_VALHALLA_POLYLINE_TIMEOUT_MS ?? "60000";
+        throw new ValhallaError(
+          `Valhalla route timed out (PLAN_VALHALLA_POLYLINE_TIMEOUT_MS=${ms}ms)`
+        );
       }
+      throw new ValhallaError(`Valhalla fetch failed at ${url}: ${msg}`);
     }
 
-    // maneuvers
-    const maneuvers = leg?.maneuvers ?? leg?.maneuver ?? [];
-    const parsedManeuvers: NonNullable<ItineraryLeg["maneuvers"]> = [];
-    if (Array.isArray(maneuvers)) {
-      for (const m of maneuvers) {
-        const text =
-          m?.instruction ?? m?.text ?? m?.name ?? m?.modifier ?? m?.sign ?? null;
-        if (typeof text === "string" && text.trim()) {
-          parsedManeuvers.push({
-            text: text.trim(),
-            instructionType: m?.instruction_type ?? m?.type,
-            distanceMeters: typeof m?.length === "number" ? m.length : undefined,
-            timeSeconds: typeof m?.time === "number" ? m.time : undefined
-          });
-        }
-      }
+    if (!resp.ok) {
+      throw new ValhallaError(`Valhalla directions failed (${resp.status})`);
     }
 
-    return { geometry, maneuvers: parsedManeuvers.length ? parsedManeuvers : undefined };
+    const json = await resp.json();
+    return parseValhallaRouteLegJson(json);
   });
 }
 

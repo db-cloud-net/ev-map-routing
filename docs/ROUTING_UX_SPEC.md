@@ -47,6 +47,8 @@ This document captures **product and UX decisions** for EV trip planning with **
 
 If **60s** cannot be met in practice, **relax other constraints** (coarser global line, shorter horizon, tighter cap on reorder search, fewer refinements per round) — **before** abandoning the progressive model.
 
+**Engineering decomposition (non-normative):** [`docs/designs/slice4-progressive-first-screen.md`](./designs/slice4-progressive-first-screen.md) — proposed API phases and Valhalla usage; does not change the decisions above until adopted by review.
+
 ---
 
 ## 4. Progressive refinements (after first screen)

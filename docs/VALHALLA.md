@@ -33,6 +33,10 @@ Invoke-RestMethod -Uri "http://<host>:8002/status" -Method Get
 
 Then set **`VALHALLA_BASE_URL`** to **exactly** that origin (scheme + host + port).
 
+## Response shape (`/route`)
+
+Some Valhalla builds return **`trip.legs[0].shape`** (or **`trip.shape`**) as a **Google-encoded polyline string** instead of GeoJSON. The API decodes **precision 6** (Valhalla default) and falls back to **precision 5** if needed.
+
 ## Related env (timeouts only)
 
 - **`PLAN_VALHALLA_POLYLINE_TIMEOUT_MS`** — first corridor `/route`
