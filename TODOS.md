@@ -1,8 +1,18 @@
 # TODOS
 
-## Current status (snapshot — **2026-03-18**)
+**Resume local mirror work:** [`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md) *(what’s done, next steps, file index — updated 2026-03-20).*
+
+## Current status (snapshot — **2026-03-20**)
 
 **DRI:** David *(adjust if ownership changes)*
+
+### Immediate next steps (pick one)
+
+1. **Commit / PR** — Working tree is **large** (mirror + v2 + locks). Prefer **splitting**: one PR for **Slice 1 locks** only (`shared/types`, `api/src/planner/planTrip*.ts`, `lockValidation`, `planTripOneLegLocked`, `server`, `web/map`, `docs/V2_API`, `TESTING`, `.env.example`) vs **mirror** / other files — or **one PR** with a clear commit message per theme.
+2. **Manual verify** — **`TESTING.md`** § *Version 2 smoke* + step **5** (locks). Single‑segment: `/map` → plan with candidates → tap charger(s) → replan; confirm `errorCode` on unknown id.
+3. **Then** — **Slice 2** (optional): PRD sketch for **`replanFrom` / mid-journey** (`TODOS.md` backlog below). **Slice 3** `GET /candidates` stays gated per **`docs/V2_CHERRY_PICKS.md`**.
+
+---
 
 **Shipped / working in repo**
 
@@ -11,13 +21,78 @@
 - **Logging (MVP):** `/plan` emits structured **JSON lines** for start/end/error with **`requestId`**; planner accepts and threads `requestId` through major paths (`api/src/server.ts`, `api/src/planner/planTrip.ts`).
 - **Repo / DX:** `api/dist/` and `web/.next/` ignored; API **`start`** script targets built server path; **`.env.example`**, **`README.md`** (`dev:api` / `dev:web`, port **3000/3001**), **`CORS_ORIGIN`** called out for manual testing.
 - **QA docs:** `TESTING.md` covers smoke vs **`SPAWN_SERVER=true`** E2E, PowerShell env, **Next.js chunk 400 / blank map**, WSL + **`browse`** fallback, CORS/port notes.
+- **Phase 2 (architecture + harness):** `docs/local-mirror-architecture.md` **A1–D3** complete; Phase 2 checklist rows below are **checked**. Mirror smoke scripts (`scripts/mirror-c4-*.mjs`, `d1-verify-mirror.mjs`) + [`docs/d1-runbook.md`](docs/d1-runbook.md) support ops validation.
+- **Production NAS (Synology):** `docker-compose.mirror.yml` under `/volume1/docker/Travel-Routing`: `planner-api`, `mirror-refresh-once`, external **`prod-network`**, Valhalla on same network, **`env_file`** to `.env`. Mirror files: **`api/mirror/current/manifest.json`** + **`api/mirror/snapshots/<id>/`**.
+- **V2 Slice 1 — Locks (shipped in code):** `lockedChargersByLeg` + `lockedHotelId` on **`POST /plan`**, **chained** `planLeastTimeSegment` (`planTripOneLegLocked.ts`), **per-leg** rows + **`errorCode`** taxonomy (**`docs/V2_API.md`**), **`V2_MAX_LOCKED_CHARGERS`** (`.env.example`). Map UI: **tap-to-lock** on charger/hotel candidates for **single‑segment** trips only (**`web/src/app/map/page.tsx`**).
 
 **Known gaps / don’t assume “done”**
 
-- **Manual `Raleigh → Greensboro`:** Often blocked by **env/ops** (wrong **`CORS_ORIGIN`** vs web port, stale **`web/.next`**, port **3000** already in use), not only planner logic — follow **`README.md`** + **`TESTING.md` §7.
-- **Per-stage `/plan` budgets:** **Total** wall-clock (+ Overpass query timeout) is enforced; **explicit separate caps** for geocode / NREL / Valhalla per stage are **not** fully implemented — still an exit-criteria gap.
-- **Phase 3:** No single **one-command** QA binary; **`browse.exe`** under WSL still often needs **Bun CLI** fallback (documented).
+- **Manual `Raleigh → Greensboro`:** Often blocked by **env/ops** (wrong **`CORS_ORIGIN`** vs web port, stale **`web/.next`**, port **3000** already in use), not only planner logic — follow **`README.md`** + **`TESTING.md` §7** and **§ Phase 1 exit verification (manual)**.
+- **Per-stage `/plan` budgets:** See **`TESTING.md`** env matrix (`PLAN_TOTAL_TIMEOUT_MS`, `PLAN_GEOCODE_TIMEOUT_MS`, `PLAN_VALHALLA_POLYLINE_TIMEOUT_MS`, `PLAN_VALHALLA_LEG_TIMEOUT_MS`, `NREL_FETCH_TIMEOUT_MS`, `OVERPASS_FETCH_TIMEOUT_MS`); tune per SLO.
+- **Phase 3:** **`npm run qa:smoke`** covers API build + fast E2E; **`browse.exe`** / UI under WSL may still need **Bun CLI** fallback (documented in **`TESTING.md`**).
 - **Overnight E2E:** HIE scenario is reliable when run with **`SPAWN_SERVER=true`** (per-case env); smoke-only run against a long-running dev API can **false-fail** (documented in **`TESTING.md`**).
+
+---
+
+## V2 Selective Expansion — pre-Slice 1 checklist (Plan-Eng-Review) — **resolved**
+
+**Decisions (implemented / documented):**
+
+- [x] **Lock semantics** — **B)** Chained **segment** solves (`planTripOneLegLocked.ts`), not a single modified Dijkstra inside `leastTimeSegment`. **Overnight + locks:** not combined; **`LOCKED_ROUTE_TOO_LONG`** if chained time exceeds threshold. **`docs/V2_API.md`** + **§ Locks** in **`TESTING.md`**.
+- [x] **Multi-leg request shape** — **`lockedChargersByLeg: string[][]`** (one row per driving leg). **`lockedHotelId`** (single id for overnight preference). **`shared/types.ts`**.
+- [x] **Error contract** — **`errorCode`** on **`PlanTripResponse`** (`UNKNOWN_CHARGER_LOCK`, `INFEASIBLE_CHARGER_LOCK`, `INVALID_LOCK_LEGS`, …). Validation → HTTP **400** JSON body (not 500).
+- [x] **Support / debug** — **`debug.lockValidation`** **not** added; diagnose via **`requestId`** + structured logs + **`debug`** on errors (**`docs/V2_API.md`**).
+
+### PR description snippet (copy-paste)
+
+```markdown
+## V2 Slice 1 — decisions (from TODOS.md)
+
+- Lock semantics: **B** (chained least-time segments)
+- Multi-leg locks: **`lockedChargersByLeg`** (per-leg rows)
+- Error contract: **`errorCode`** — see `docs/V2_API.md`
+- debug.lockValidation: **no** (logs + `requestId`)
+```
+
+---
+
+## V2 Selective Expansion — Slice 1 (implementation) — **status**
+
+**Depends on:** pre-Slice 1 checklist above (done). **PR split:** still recommended if committing mirror + v2 together.
+
+### Slice 1 — contracts + types
+- [ ] **Owner:** David  **Task:** **`PRD.md`** — add a short **§** on locks (limits, UX, single-segment map UI vs API multi-leg) — *V2_API is ahead of PRD here.*
+- [x] **Owner:** David  **Task:** **`docs/V2_API.md`** — request fields, **error taxonomy**, semantics.
+- [x] **Owner:** David  **Task:** **`shared/types.ts`** — `lockedChargersByLeg`, `lockedHotelId`, `errorCode`.
+
+### Slice 1 — API + planner
+- [x] **Owner:** David  **Task:** **Request schema** — Zod + **`lockValidation.ts`** (leg length, duplicates, caps).
+- [x] **Owner:** David  **Task:** **`planTrip` / `planTripOneLeg` / `planTripOneLegLocked`** — enforce locks; **multi-leg** passes per-leg rows.
+- [x] **Owner:** David  **Task:** **Performance guard** — **`V2_MAX_LOCKED_CHARGERS`** (`.env.example`, `lockValidation.ts`).
+
+### Slice 1 — tests
+- [ ] **Owner:** David  **Task:** **Automated E2E** for unknown vs infeasible lock (*optional follow-up*; **`TESTING.md`** step 5 documents manual).
+- [ ] **Owner:** David  **Task:** **Multi-leg** lock API **manual** or E2E branch (*API supports; map UI is single-segment only*).
+- [x] **Owner:** David  **Task:** **`npm run qa:smoke`** green.
+
+### Slice 1 — web (map)
+- [x] **Owner:** David  **Task:** **Tap-to-lock** (chargers + hotel); locked styling; **single-segment** trips only.
+- [x] **Owner:** David  **Task:** **`POST /plan`** — `waypoints`, `includeCandidates`, lock fields; errors show **`message`** + **`errorCode`** in thrown message (*light polish: `classifyPlanError` by `errorCode*`).
+
+### Slice 1 — exit criteria
+- [x] **Owner:** David  **Single-leg** — **manual** + **`TESTING.md`**.
+- [ ] **Owner:** David  **Multi-leg** + locks — **API** ready; **manual** or **E2E** when needed.
+- [x] **Owner:** David  **Failure modes** — **`errorCode`** on responses; **`TESTING.md`** unknown-id repro.
+- [ ] **Owner:** David  **`V2_CHERRY_PICKS`** / **`CI_SCOPE`** — review if a **locks-only** PR touches platform docs; **no change required** for pure feature PR.
+
+---
+
+## V2 Selective Expansion — plan after Slice 1
+
+| Slice | What | Status |
+|-------|------|--------|
+| **Slice 2** | Mid-journey / **`replanFrom`** (PRD + API sketch) | **Next** — optional |
+| **Slice 3** | **`GET /candidates`** | Gated — **`docs/V2_CHERRY_PICKS.md`** / product call |
 
 ---
 
@@ -27,36 +102,38 @@
 - [x] **Owner:** David  **Task:** F1 marker cleanup between plans *(clear on replan before `fetch`)*
 - [x] **Owner:** David  **Task:** F2 readable basemap labels *(Carto Voyager `styleUrl`)*
 - [x] **Owner:** David  **Task:** F3 highlighted selected route *(line + halo; artifacts cleared on replan)*
-- [x] **Owner:** David  **Task:** long-route timeout/rescue handling *(total API + client caps; 408 / classified UI — **per-stage** budgets still open)*
+- [x] **Owner:** David  **Task:** long-route timeout/rescue handling *(total API + client caps; 408 / classified UI; per-stage envs in **`TESTING.md`**)*
 - [x] **Owner:** David  **Task:** UI error-contract behavior *(timeout / network / HTTP distinctions in `classifyPlanError`)*
 
 **Phase 1 exit criteria**
-- [ ] **Owner:** David  Re-plan map 5x in one session without stale markers/routes. *(implemented — **needs recurring manual/visual confirmation**)*
-- [ ] **Owner:** David  `Raleigh -> Greensboro` succeeds consistently. *(planner path OK in E2E sanity case; **user env** must match **3000/3001 + CORS + clean `.next`**)*
+- [ ] **Owner:** David  Re-plan map 5x in one session without stale markers/routes. *(Steps: **`TESTING.md` § Phase 1 exit verification (manual)** — check this box after you complete them.)*
+- [ ] **Owner:** David  `Raleigh -> Greensboro` succeeds consistently. *(Same §; **user env** must match **3000/3001 + CORS + clean `.next`** — check this box when satisfied.)*
 - [x] **Owner:** David  Long-haul requests return clear, classified failures (no generic `Failed to fetch` only — **improved**; providers can still fail for other reasons).
-- [ ] **Owner:** David  `/plan` has explicit per-stage timeout budgets (`geocode`, `NREL`, `Overpass`, `Valhalla`) plus total request cap documented and enforced. *(**Total** cap + Overpass query timeout **yes**; **per-stage matrix** still **TODO**.)*
+- [x] **Owner:** David  `/plan` has explicit per-stage timeout budgets (`geocode`, `NREL`, `Overpass`, `Valhalla`) plus total request cap documented and enforced. *(**`PLAN_TOTAL_TIMEOUT_MS`** + per-stage envs in **`TESTING.md`**; geocode / Valhalla polyline+legs / NREL / Overpass.)*
 
 ### Phase 2 — Local Mirror Architecture (A/B/C lanes)
-- [ ] **Owner:** David  **Task:** A1-A5 architecture decisions finalized and reviewed
-- [ ] **Owner:** David  **Task:** B1-B4 snapshot/validation/fallback architecture finalized
-- [ ] **Owner:** David  **Task:** C1-C4 migration/rollback/observability architecture finalized
+- [x] **Owner:** David  **Task:** A1-A5 architecture decisions finalized and reviewed *(A1–A5 drafted in `docs/local-mirror-architecture.md`; sign-off checklist + D1–D3 specs completed)*
+- [x] **Owner:** David  **Task:** B1-B4 snapshot/validation/fallback architecture finalized *(B1–B4 done in `docs/local-mirror-architecture.md`)*
+- [x] **Owner:** David  **Task:** C3-C4 migration/rollback/observability architecture finalized
+- [x] **Owner:** David  **Task:** C4 end-to-end smoke harness (`scripts/mirror-c4-longrun-smoke.mjs`) verified routing + required log events under `dual_read_compare` and `SOURCE_ROUTING_MODE_FORCE=remote_only`.
+- [x] **Owner:** David  **Task:** C4 extended load smoke (`scripts/mirror-c4-load-smoke.mjs`) verified required log events under repeated `/plan` requests.
 
 **Phase 2 exit criteria**
-- [ ] **Owner:** David  Source router ownership is centralized (single policy module design).
-- [ ] **Owner:** David  Typed error taxonomy and fallback matrix are complete (no silent-path gaps).
-- [ ] **Owner:** David  Snapshot lifecycle supports atomic promotion and rejection of invalid snapshots.
-- [ ] **Owner:** David  Dual-read compare and rollback trigger rules are explicit and testable on paper.
-- [ ] **Owner:** David  Matrix test requirement is explicit: `mode x failure` coverage (`remote-only`/`dual-read`/`local-primary` x `timeout`/`stale`/`schema mismatch`/`source unavailable`).
+- [x] **Owner:** David  Source router ownership is centralized (single policy module design).
+- [x] **Owner:** David  Typed error taxonomy and fallback matrix are complete (no silent-path gaps).
+- [x] **Owner:** David  Snapshot lifecycle supports atomic promotion and rejection of invalid snapshots.
+- [x] **Owner:** David  Dual-read compare and rollback trigger rules are explicit and testable on paper.
+- [x] **Owner:** David  Matrix test requirement is explicit: `mode x failure` coverage (`remote-only`/`dual-read`/`local-primary` x `timeout`/`stale`/`schema mismatch`/`source unavailable`).
 
 ### Phase 3 — QA + CI Hardening
-- [ ] **Owner:** David  **Task:** one-command QA harness (WSL/Windows stable path) — *partially superseded by **`TESTING.md` + npm scripts**; **single CLI** still open*
-- [ ] **Owner:** David  **Task:** finalize CI gating plan with dev-infra timing
-- [ ] **Owner:** David  **Task:** connect SLO/error-budget checks to runbook/dashboard
+- [x] **Owner:** David  **Task:** one-command QA harness (WSL/Windows stable path) — **`npm run qa:smoke`** ([`scripts/qa-smoke-all.mjs`](scripts/qa-smoke-all.mjs)); browse/UI + Docker smoke remain per **`TESTING.md`**
+- [x] **Owner:** David  **Task:** finalize CI gating plan with dev-infra timing — see [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md) *(refine when CI provider is chosen)*
+- [x] **Owner:** David  **Task:** connect SLO/error-budget checks to runbook/dashboard — *stub: log-based signals + pointers in [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md) § SLO; dashboard TBD*
 
 **Phase 3 exit criteria**
-- [ ] **Owner:** David  Single command runs setup + smoke + artifacts with clear pass/fail. *(**Manual path** documented; **one-shot automation** still open.)*
-- [ ] **Owner:** David  CI/dev-infra decision recorded and gate scope agreed.
-- [ ] **Owner:** David  SLO/error-budget signals are visible enough for release readiness calls.
+- [x] **Owner:** David  Single command runs **API build** + **core smoke** with clear pass/fail. *(`npm run qa:smoke`; full stack / Docker / UI — **`TESTING.md`** + `CI_SCOPE.md`.)*
+- [x] **Owner:** David  CI/dev-infra decision recorded and gate scope agreed. *(Initial scope in **`docs/CI_SCOPE.md`**.)*
+- [x] **Owner:** David  SLO/error-budget signals are visible enough for release readiness calls. *(v1: **JSON logs** + `CI_SCOPE.md` stub; formal dashboard optional.)*
 
 ### Deferred (explicit)
 - **Provider contract/snapshot test suite expansion** — after mirror rollout starts.
@@ -76,7 +153,7 @@
 ### Local mirror architecture execution lane (architecture only)
 **What:** Execute architecture design only (no implementation yet) for the local mirror epic in dependency order.  
 **Why:** Prevents implementation thrash and locks contracts/fallback behavior before coding.  
-**Context:** This lane decomposes the local mirror epic into architecture deliverables A1-D3. **Working draft:** `docs/local-mirror-architecture.md` (fill A1→D3 in order).  
+**Context:** This lane decomposes the local mirror epic into architecture deliverables A1-D3. **Working draft:** `docs/local-mirror-architecture.md` — **A1–A5 complete**; **D3** still to fill.
 **Effort:** L (human) -> M (CC+gstack)  
 **Priority:** P0  
 **Depends on:** None
@@ -85,6 +162,7 @@
 **What:** Define canonical schemas for charger data, POI/hotel data, and snapshot metadata consumed by planner logic regardless of source (local or remote).  
 **Why:** Eliminates source-specific branching and integration drift.  
 **Context:** Contract boundary all providers normalize to before planner orchestration.  
+**Status:** **Drafted** in `docs/local-mirror-architecture.md` §A1 (2026-03-19).  
 **Effort:** M (human) -> S (CC+gstack)  
 **Priority:** P0  
 **Depends on:** None
@@ -92,7 +170,8 @@
 ### A2) Typed error taxonomy for provider and mirror paths
 **What:** Define explicit error classes and mapping rules (`Timeout`, `StaleSnapshot`, `SchemaMismatch`, `SourceUnavailable`, `ValidationFailure`).  
 **Why:** Enables deterministic fallback and prevents silent failures.  
-**Context:** Shared across provider adapters and source router policy.  
+**Context:** Shared across provider adapters and source router policy. Implemented as `SourceError` / `SourceErrorCode` in doc.  
+**Status:** **Drafted** in `docs/local-mirror-architecture.md` §A2 (2026-03-19).  
 **Effort:** S (human) -> S (CC+gstack)  
 **Priority:** P0  
 **Depends on:** A1
@@ -101,6 +180,7 @@
 **What:** Define `ChargerProvider` and `PoiProvider` interfaces with strict input/output/error contracts and timeout semantics.  
 **Why:** Decouples planner orchestration from source implementation details.  
 **Context:** Remote APIs and local mirrors must be interchangeable behind these interfaces.  
+**Status:** **Drafted** in `docs/local-mirror-architecture.md` §A3 (2026-03-19).  
 **Effort:** M (human) -> S (CC+gstack)  
 **Priority:** P0  
 **Depends on:** A1, A2
@@ -109,6 +189,7 @@
 **What:** Define routing modes and decision tree (`remote-only`, `dual-read-compare`, `local-primary-fallback-remote`) and source metadata output.  
 **Why:** Provides safe migration and controlled cutover path.  
 **Context:** Router policy drives runtime source choice and fallback behavior.  
+**Status:** **Drafted** in `docs/local-mirror-architecture.md` §A4 (2026-03-19).  
 **Effort:** M (human) -> S (CC+gstack)  
 **Priority:** P0  
 **Depends on:** A2, A3
@@ -117,6 +198,7 @@
 **What:** Define max snapshot age, staleness thresholds, and behavior when local data is stale.  
 **Why:** Guarantees local data quality, not just local availability.  
 **Context:** Drives promotion gates, fallback triggers, and health checks.  
+**Status:** **Drafted** in `docs/local-mirror-architecture.md` §A5 (2026-03-19).  
 **Effort:** S (human) -> S (CC+gstack)  
 **Priority:** P0  
 **Depends on:** A1, A4

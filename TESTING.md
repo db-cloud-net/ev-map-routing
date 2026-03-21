@@ -16,7 +16,7 @@ The backend functional layer is especially important because external services (
 - API server running on **`http://localhost:3001`**
 - Web app running on **`http://localhost:3000`**
 
-**Default manual dev:** from repo root, two terminals: `npm run dev:api` then `npm run dev:web`. Set **`CORS_ORIGIN=http://localhost:3000`** in `.env` so the API accepts requests from that origin (see `.env.example`).
+**Default manual dev:** from repo root, two terminals: `npm run dev:api` then `npm run dev:web`. Set **`DEPLOYMENT_ENV=dev-local`** in `.env` (default) so the API reflects the browser `Origin` header; `CORS_ORIGIN` is mainly a fallback (see `.env.example`).
 
 `api/dist/` is not committed; run **`npm -w api run build`** before **`npm -w api run start`** (production-style). For local dev, **`npm -w api run dev`** runs TypeScript directly.
 
@@ -33,6 +33,55 @@ For non-secret QA defaults, prefer documenting them in this file and/or using th
 |----------|---------|------|
 | `PLAN_TOTAL_TIMEOUT_MS` | `120000` | API: hard cap on `planTrip` wall time; responds with HTTP **408** + `debug.reason: planner_timeout` when exceeded |
 | `NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS` | `130000` | Web: `fetch` abort so the UI does not hang past ~client limit (should be ≥ API cap + slack) |
+
+**Per-stage `/plan` budgets (server-side)** — enforced inside `planTrip` / clients; tune if a stage dominates latency or hits upstream limits.
+
+| Variable | Default | Stage |
+|----------|---------|--------|
+| `PLAN_GEOCODE_TIMEOUT_MS` | `30000` | Nominatim fetch per start/end geocode (`api/src/services/geocode.ts`) |
+| `PLAN_VALHALLA_POLYLINE_TIMEOUT_MS` | `60000` | First Valhalla `/route` for corridor polyline (`getRoutePolyline`) |
+| `PLAN_VALHALLA_LEG_TIMEOUT_MS` | `30000` | Each Valhalla `/route` in the segment solver (`getTravelTimeMinutes` / `getTravelDistanceMiles`) |
+| `NREL_FETCH_TIMEOUT_MS` | `60000` | Each NREL nearest-point / route request (`RemoteNrelAdapter`; passed as abort budget per call) |
+| `OVERPASS_FETCH_TIMEOUT_MS` | `60000` | Each Overpass hotel query (`RemoteOverpassAdapter`) |
+
+### Production (public URL + CORS)
+
+When the API is reached via **HTTPS on a Cloudflare (or other) hostname**, browsers send `Origin: https://your-app.example.com`. The API must treat that as **production** CORS:
+
+- Set **`DEPLOYMENT_ENV=production`** (or `prod`) on the planner process.
+- Set **`CORS_ORIGIN`** to the **exact** public origin string the browser uses (scheme + host + port if non-default), e.g. `https://your-app.example.com`. In production the API **does not** reflect arbitrary origins; a mismatch surfaces as a browser CORS failure on `POST /plan`.
+
+**Quick checks**
+
+1. **Preflight:** `curl -i -X OPTIONS "https://<your-api-host>/plan" -H "Origin: https://<your-web-origin>" -H "Access-Control-Request-Method: POST"` — expect `204` or `200` and `Access-Control-Allow-Origin` matching your web origin when configured correctly.
+2. **POST:** From the deployed web app open DevTools → Network and confirm `/plan` succeeds (no CORS error). Or `curl` with same `Origin` header if you send JSON manually.
+
+Tunnel/network layout (Docker `prod-network`, `cloudflared`, etc.): **[docs/CLOUDFLARE.md](docs/CLOUDFLARE.md)**.
+
+---
+
+## Version 2 smoke (automated + manual)
+
+**Automated:** `npm run qa:smoke` runs `npm -w api run build` plus existing E2E scripts (CORS + log contract). Those scripts must stay green after v2 changes.
+
+**Manual quick check (2–3 minutes):**
+1. Start API + web (`3001` / `3000`).
+2. `POST /plan` with `{ "start": "Raleigh, NC", "end": "Greensboro, NC", "includeCandidates": true }` — expect `status: "ok"`, `responseVersion: "v2-1"`, and `candidates.chargers.length >= 1` when NREL returns data.
+3. Open `/map`, enable **Show charger candidates**, run **Plan Trip** — green markers should appear for candidates; itinerary markers still render.
+4. **Waypoints:** set start `Raleigh, NC`, waypoint `Charlotte, NC`, end `Atlanta, GA` — expect `status: "ok"` and at least one `waypoint` stop in `stops` when the chain succeeds.
+5. **Locks (Slice 1):** With **no** waypoints, run a plan with `includeCandidates: true`, then `POST` again with `lockedChargersByLeg: [[ "<id from candidates.chargers[0].id>" ]]` — expect `ok` or `INFEASIBLE_CHARGER_LOCK` / `LOCKED_ROUTE_TOO_LONG` (never a bare 500). Unknown ids: `lockedChargersByLeg: [[ "definitely-not-a-real-id" ]]` → `UNKNOWN_CHARGER_LOCK` + HTTP 400.
+
+**Regression:** Omitting `waypoints` + `includeCandidates` should match prior v1 behavior (`responseVersion: "mvp-1"` when neither is sent).
+
+---
+
+## Phase 1 exit verification (manual)
+
+Use this when closing **Phase 1 exit criteria** in [`TODOS.md`](TODOS.md).
+
+1. **Re-plan map 5x:** On `/map`, run **Plan Trip** five times in one session (change start/end at least twice). Confirm prior route lines and charger markers do not accumulate (see `clearMapPlanArtifacts` behavior in `web/src/app/map/page.tsx`).
+2. **Short route sanity:** With API + web per [`README.md`](README.md) (`3000`/`3001`, `DEPLOYMENT_ENV=dev-local`, clean `web/.next` if needed), plan **Raleigh, NC → Greensboro, NC** and confirm a normal `status: "ok"` response or a clear, classified error (not a bare `Failed to fetch`).
+3. Check off the corresponding rows in `TODOS.md` when satisfied.
 
 ---
 
@@ -92,6 +141,30 @@ $env:SPAWN_SERVER = 'true'
 $env:API_PORT = '3002'   # or 3001 if nothing is listening there
 node scripts/e2e-plan-functional.mjs
 ```
+
+---
+
+## 2.5) Additional automated checks (fast)
+
+**One command (API build + CORS + log contract):**
+
+```bash
+npm run qa:smoke
+```
+
+Runs [`scripts/qa-smoke-all.mjs`](../scripts/qa-smoke-all.mjs) (`npm -w api run build`, then `e2e-cors-functional.mjs`, then `e2e-plan-log-contract.mjs`). See [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md) for suggested CI gating.
+
+These scripts are also listed individually below — they keep critical “plumbing” stable while you add new functionality:
+
+- CORS header behavior across `dev-local` vs `production`:
+  - `node scripts/e2e-cors-functional.mjs`
+- JSON log contract includes `deploymentEnv` and preserves `requestId` correlation:
+  - `node scripts/e2e-plan-log-contract.mjs`
+- Browser-level smoke check that the UI renders the `Itinerary` panel and shows no CORS/preflight console errors:
+  - `node scripts/ui-plan-trip-smoke.mjs`
+
+For browser evidence from gstack runs, screenshots are saved under:
+- `.gstack/qa-reports/screenshots/`
 
 ---
 
@@ -177,8 +250,8 @@ Use this flow when running web/API on Windows Node while driving QA from WSL/bro
    - `cmd.exe /c "netstat -ano | findstr :3000"`
    - `cmd.exe /c "netstat -ano | findstr :3001"`
    - `cmd.exe /c "taskkill /PID <pid> /F"` (if needed)
-2. Start API with explicit CORS origin:
-   - `cmd.exe /c "cd /d C:\Users\david\Dev\Projects\Travel-Routing && set PORT=3001&& set CORS_ORIGIN=http://172.22.16.1:3000&& C:\Progra~1\nodejs\node.exe api\dist\api\src\server.js"`
+2. Start API in `dev-local` mode (reflects browser Origin):
+  - `cmd.exe /c "cd /d C:\Users\david\Dev\Projects\Travel-Routing && set PORT=3001&& set DEPLOYMENT_ENV=dev-local&& set CORS_ORIGIN=http://localhost:3000&& C:\Progra~1\nodejs\node.exe api\dist\api\src\server.js"`
 3. Build web with explicit API base:
    - `cmd.exe /c "cd /d C:\Users\david\Dev\Projects\Travel-Routing && set NEXT_PUBLIC_API_BASE=http://172.22.16.1:3001&& npm -w web run build"`
 4. Start web in production mode:
@@ -191,7 +264,7 @@ Notes:
 
 - Prefer `next build` + `next start` for QA stability. `next dev` can hang or produce inconsistent chunk state during repeated stashing/restarts.
 - In WSL, use the Windows gateway (`172.22.16.1`) rather than `localhost` for browser QA routes.
-- Always pin `NEXT_PUBLIC_API_BASE` and `CORS_ORIGIN` during QA runs; do not rely on implicit defaults.
+- Always pin `NEXT_PUBLIC_API_BASE`. In `dev-local`, `CORS_ORIGIN` is mainly a fallback; in `production`, it must match your web origin.
 - In `cmd.exe`, do not put a space before `&&` after `set VAR=...`; that trailing space becomes part of the env value.
 
 ### Browse runtime fallback (when `browse.exe` only prints "Starting server...")

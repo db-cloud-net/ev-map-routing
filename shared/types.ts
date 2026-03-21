@@ -1,6 +1,6 @@
 export type LatLng = { lat: number; lon: number };
 
-export type StopType = "start" | "charge" | "sleep" | "end";
+export type StopType = "start" | "charge" | "sleep" | "end" | "waypoint";
 
 export type ItineraryStop = {
   id: string;
@@ -28,9 +28,43 @@ export type ItineraryLeg = {
   }>;
 };
 
+/** Request body for `POST /plan` (v2 adds optional fields; omit for v1 A→B). */
 export type PlanTripRequest = {
   start: string; // user-provided place/address text (geocode later)
   end: string;
+  /** Ordered intermediate destinations (geocoded strings). Omitted or empty = v1 behavior. */
+  waypoints?: string[];
+  /** When true, successful responses may include `candidates` for map layers (same IDs as planning). */
+  includeCandidates?: boolean;
+  /**
+   * Per driving leg (length = `max(1, waypoints.length + 1)`): ordered charger ids that must be visited on that leg.
+   * Ids must appear in `candidates.chargers` from a prior plan for the same corridor (same id universe as NREL).
+   */
+  lockedChargersByLeg?: string[][];
+  /** When an overnight stop is inserted, prefer this hotel id (Overpass id) if it appears near the anchor. */
+  lockedHotelId?: string;
+};
+
+export type CandidateCharger = {
+  id: string;
+  name: string;
+  coords: LatLng;
+  maxPowerKw?: number;
+  source: "nrel";
+};
+
+export type CandidateHotel = {
+  id: string;
+  name: string;
+  coords: LatLng;
+  source: "overpass";
+};
+
+export type PlanTripCandidates = {
+  chargers: CandidateCharger[];
+  hotels: CandidateHotel[];
+  /** Which leg these candidates belong to when `waypoints` are used (0-based). */
+  legIndex: number;
 };
 
 export type PlanTripResponse = {
@@ -38,6 +72,8 @@ export type PlanTripResponse = {
   responseVersion: string;
   status: "ok" | "error";
   message?: string;
+  /** Machine-readable error for clients (validation / lock feasibility). */
+  errorCode?: string;
   debug?: Record<string, unknown>;
   stops: ItineraryStop[];
   legs: ItineraryLeg[];
@@ -48,5 +84,7 @@ export type PlanTripResponse = {
     totalTimeMinutes: number;
     overnightStopsCount: number;
   };
+  /** Present when `includeCandidates` was requested and planning succeeded for at least one leg. */
+  candidates?: PlanTripCandidates;
 };
 

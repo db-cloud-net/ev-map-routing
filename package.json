@@ -9,7 +9,8 @@
     "dev:api": "npm -w api run dev",
     "dev:web": "npm -w web run dev",
     "dev": "npm run dev:api",
-    "build": "npm -w api run build && npm -w web run build"
+    "build": "npm -w api run build && npm -w web run build",
+    "qa:smoke": "node scripts/qa-smoke-all.mjs"
   }
 }
 
