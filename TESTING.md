@@ -60,6 +60,7 @@ For non-secret QA defaults, prefer documenting them in this file and/or using th
 |----------|---------|------|
 | `PLAN_TOTAL_TIMEOUT_MS` | `120000` | API: hard cap on `planTrip` wall time; responds with HTTP **408** + `debug.reason: planner_timeout` when exceeded |
 | `NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS` | `130000` | Web: `fetch` abort so the UI does not hang past ~client limit (should be ≥ API cap + slack) |
+| `NEXT_PUBLIC_PREFETCH_CANDIDATES` | `true` | Web map: parallel **`POST /candidates`** (Slice 3) so charger/hotel pins can appear before **`POST /plan`** finishes; set **`false`** to rely on `/plan` + `includeCandidates` only |
 
 **Per-stage `/plan` budgets (server-side)** — enforced inside `planTrip` / clients; tune if a stage dominates latency or hits upstream limits.
 

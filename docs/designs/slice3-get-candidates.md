@@ -71,7 +71,7 @@ For **progressive UX** (rough route + map context early, refinements later), we 
 | **0** | This doc + **V2_API.md** / **PRD** pointers (**spike complete**). |
 | **1** | **Done** — shared **`fetchCorridorChargersForLeg`** in **`api/src/planner/corridorCandidates.ts`** (used by **`planTripOneLeg`** and **`planTripCandidatesOnly`**). |
 | **2** | **Done** — **`POST /candidates`** + Zod + **`e2e-candidates-smoke.mjs`** in **`qa:smoke`**. |
-| **3** | Map UI: optional prefetch path (feature-flag or always-on per product). |
+| **3** | **Done** — Map page (`web/src/app/map/page.tsx`) fires **`POST /candidates`** in parallel with **`POST /plan`** when **`NEXT_PUBLIC_PREFETCH_CANDIDATES`** is not `false`. |
 
 ---
 

@@ -3,7 +3,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { ItineraryStop, PlanTripResponse } from "../../../../shared/types";
+import type {
+  CandidatesApiResponse,
+  ItineraryStop,
+  PlanTripCandidates,
+  PlanTripResponse
+} from "../../../../shared/types";
 
 export default function MapPage() {
   const mapEl = useRef<HTMLDivElement | null>(null);
@@ -34,6 +39,9 @@ export default function MapPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<PlanTripResponse | null>(null);
+  /** Slice 3: pins from `POST /candidates` before `/plan` completes (same id universe). */
+  const [candidatePreview, setCandidatePreview] = useState<PlanTripCandidates | null>(null);
+  const candidatesRequestGenRef = useRef(0);
   /** Per-leg ordered charger locks (Slice 1 UI: single-leg trips only; multi-leg rows stay empty). */
   const [lockedChargersByLeg, setLockedChargersByLeg] = useState<string[][]>([[]]);
   const [lockedHotelId, setLockedHotelId] = useState<string | null>(null);
@@ -229,15 +237,18 @@ export default function MapPage() {
     }
   }, [plan]);
 
+  const candidatesForMap: PlanTripCandidates | null =
+    plan?.status === "ok" && plan.candidates ? plan.candidates : candidatePreview;
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     for (const m of candidateMarkersRef.current) m.remove();
     candidateMarkersRef.current = [];
-    if (!plan || plan.status !== "ok" || !plan.candidates) return;
+    if (!candidatesForMap) return;
 
     if (showChargerCandidates) {
-      for (const c of plan.candidates.chargers) {
+      for (const c of candidatesForMap.chargers) {
         const locked =
           singleLegTrip && lockedChargersByLeg[0]?.includes(c.id);
         const marker = new maplibregl.Marker({
@@ -265,7 +276,7 @@ export default function MapPage() {
       }
     }
     if (showHotelCandidates) {
-      for (const h of plan.candidates.hotels) {
+      for (const h of candidatesForMap.hotels) {
         const sel = singleLegTrip && lockedHotelId === h.id;
         const marker = new maplibregl.Marker({
           color: sel ? "#922b21" : "#e17055"
@@ -284,7 +295,7 @@ export default function MapPage() {
       }
     }
   }, [
-    plan,
+    candidatesForMap,
     showChargerCandidates,
     showHotelCandidates,
     singleLegTrip,
@@ -313,6 +324,7 @@ export default function MapPage() {
     clearMapPlanArtifacts();
     setLoading(true);
     setError(null);
+    setCandidatePreview(null);
     /** Slice 2 `replanFrom.stopId` needs stops from the prior plan — capture before clearing UI state. */
     const priorPlanForReplan = plan;
     setPlan(null);
@@ -320,8 +332,12 @@ export default function MapPage() {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), clientMs);
     let resp: Response | null = null;
+    const prefetchCandidates =
+      (process.env.NEXT_PUBLIC_PREFETCH_CANDIDATES ?? "true").toLowerCase() !== "false";
+    const candidatesGen = ++candidatesRequestGenRef.current;
     try {
       const apiUrl = `${apiBase.replace(/\/$/, "")}/plan`;
+      const candidatesUrl = `${apiBase.replace(/\/$/, "")}/candidates`;
       const wps = parsedWaypoints;
       const locks = lockedChargersByLeg.slice(0, legCount).map((r) => [...r]);
       const hasLocks = locks.some((r) => r.length > 0);
@@ -333,6 +349,11 @@ export default function MapPage() {
         ...(lockedHotelId ? { lockedHotelId } : {})
       };
 
+      const candidatesBody: Record<string, unknown> = {
+        end,
+        ...(wps.length ? { waypoints: wps } : {})
+      };
+
       if (replanMode === "coords") {
         const lat = Number.parseFloat(replanLat);
         const lon = Number.parseFloat(replanLon);
@@ -340,6 +361,7 @@ export default function MapPage() {
           throw new Error("Replan: enter valid latitude and longitude.");
         }
         body.replanFrom = { coords: { lat, lon } };
+        candidatesBody.replanFrom = { coords: { lat, lon } };
       } else if (replanMode === "stopId") {
         if (!priorPlanForReplan?.stops?.length) {
           throw new Error('Replan from stop: run a normal "Plan Trip" first, then pick a stop.');
@@ -350,9 +372,32 @@ export default function MapPage() {
         }
         body.replanFrom = { stopId: sid };
         body.previousStops = priorPlanForReplan.stops;
+        candidatesBody.replanFrom = { stopId: sid };
+        candidatesBody.previousStops = priorPlanForReplan.stops;
       } else {
         body.start = start;
+        candidatesBody.start = start;
       }
+
+      if (prefetchCandidates) {
+        void fetch(candidatesUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(candidatesBody),
+          signal: controller.signal
+        })
+          .then(async (r) => {
+            if (candidatesGen !== candidatesRequestGenRef.current) return;
+            const j = (await r.json().catch(() => null)) as CandidatesApiResponse | null;
+            if (r.ok && j?.status === "ok" && j.candidates) {
+              setCandidatePreview(j.candidates);
+            }
+          })
+          .catch(() => {
+            /* ignore prefetch failure — /plan still drives UX */
+          });
+      }
+
       resp = await fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -370,6 +415,9 @@ export default function MapPage() {
         throw new Error(json.message ?? `Planning failed (HTTP ${resp.status})`);
       }
       setPlan(json);
+      if (json.status === "ok" && json.candidates) {
+        setCandidatePreview(null);
+      }
     } catch (e) {
       setError(classifyPlanError(e, resp));
     } finally {
@@ -392,8 +440,9 @@ export default function MapPage() {
       <div style={{ padding: 16, borderRight: "1px solid #e5e5e5", overflow: "auto", minHeight: 0 }}>
         <h1 style={{ margin: 0, fontSize: 20 }}>EV Travel Planner (v2)</h1>
         <p style={{ margin: "6px 0 0 0", fontSize: 12, color: "#555" }}>
-          Along-route charger + hotel candidates (when returned by the API) appear as green / coral markers; the
-          itinerary uses blue / purple / orange / green for stops.
+          Along-route charger + hotel candidates appear as green / coral markers (Slice 3: requested early via{" "}
+          <code>POST /candidates</code> in parallel with <code>/plan</code> unless{" "}
+          <code>NEXT_PUBLIC_PREFETCH_CANDIDATES=false</code>). Itinerary stops use blue / purple / orange / green.
         </p>
         <p style={{ margin: "8px 0 0 0", fontSize: 12, color: "#555" }}>
           <strong>Locks (single segment only):</strong> click a green charger to require it on the route; click

@@ -89,3 +89,5 @@ User replans from **current** coordinates or a **planned stop** to **`end`** (an
 | **Response** | `status`, `requestId`, `responseVersion` (**`v2-1-candidates`**), optional **`candidates`** (`PlanTripCandidates`), optional **`errorCode`** / `message` on failure. **No** `stops` / `legs` / `totals`. |
 
 **Regression:** Baseline behavior unchanged: **`POST /plan`** with `includeCandidates` still returns candidates inside the plan response.
+
+**Web map:** The **`/map`** page may call **`POST /candidates`** in parallel with **`POST /plan`** (see **`NEXT_PUBLIC_PREFETCH_CANDIDATES`** in **`TESTING.md`**) so pins can render before the full plan returns.

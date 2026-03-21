@@ -14,7 +14,7 @@
 
 1. ~~**Commit / push**~~ — **`main`** pushed to origin (2026-03-21); dev API **ts-node-dev** listen stability in **`c07bf96`**.
 2. ~~**Manual verify**~~ — **Done** — see **Manual QA** above.
-3. **Next** — **Slice 3** **`POST /candidates`** **shipped** (API + `e2e-candidates-smoke`); optional **map prefetch** of `/candidates` before `/plan` remains a **web** follow-up.
+3. **Next** — **Slice 3** **`POST /candidates`** **shipped** (API + E2E + **map prefetch** via **`NEXT_PUBLIC_PREFETCH_CANDIDATES`**).
 
 ### Build & test priority (rolling)
 
