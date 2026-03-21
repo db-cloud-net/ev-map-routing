@@ -4,5 +4,7 @@ node_modules
 .gstack/
 web/.next/
 api/dist/
+# Local mirror refresh output (keep manifests/runbooks in docs; avoid large NDJSON in git)
+api/mirror/snapshots/
 .vscode/
 .tmp-screenshot2/

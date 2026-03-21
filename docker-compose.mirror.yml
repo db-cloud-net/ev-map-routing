@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  planner-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Load secrets and tunables from project `.env` into the container (avoids empty ${NREL_API_KEY} when compose interpolation misses the file).
+    env_file:
+      - .env
+    environment:
+      SERVICE: api
+      PORT: 3001
+      DEPLOYMENT_ENV: production
+      SOURCE_ROUTING_MODE: local_primary_fallback_remote
+      MIRROR_ROOT: /mirror
+      # Valhalla routing — must be reachable from this container (same Docker network, or host/LAN URL).
+      VALHALLA_BASE_URL: ${VALHALLA_BASE_URL:-http://valhalla:8002}
+      # NREL_API_KEY: set in `.env` (loaded via env_file above)
+      # Optional: enable rollback switch without rebuild.
+      # SOURCE_ROUTING_MODE_FORCE: remote_only
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./api/mirror:/mirror:rw
+
+  mirror-refresh-once:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      SERVICE: api
+      MIRROR_ROOT: /mirror
+      DEPLOYMENT_ENV: production
+      # NREL_API_KEY: set in `.env` (loaded via env_file above)
+      # Optional knobs for bounding the initial v1 snapshot:
+      # MIRROR_SEED_CENTER_LAT: "35.7796"
+      # MIRROR_SEED_CENTER_LON: "-78.6382"
+      # MIRROR_SEED_RADIUS_MILES: "25"
+      # MIRROR_SEED_STEP_MILES: "25"
+      MIRROR_ALLOW_OVERPASS_FAILURE_NONFATAL: "true"
+    command: ["node", "api/dist/api/src/mirror/refreshSnapshot.js"]
+    volumes:
+      - ./api/mirror:/mirror:rw
+

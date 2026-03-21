@@ -4,6 +4,8 @@ export type Hotel = {
   id: string;
   name: string;
   coords: LatLng;
+  /** OSM element type when known (`node` | `way` | `relation`). */
+  osmType?: string;
 };
 
 export class OverpassError extends Error {
@@ -13,8 +15,31 @@ export class OverpassError extends Error {
   }
 }
 
-function sleepMs(ms: number) {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+function sleepMs(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("Aborted"));
+      return;
+    }
+
+    const t = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      clearTimeout(t);
+      cleanup();
+      reject(signal?.reason ?? new Error("Aborted"));
+    };
+
+    const cleanup = () => {
+      if (!signal) return;
+      signal.removeEventListener("abort", onAbort);
+    };
+
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function computeRetryDelayMs(attempt: number) {
@@ -43,8 +68,10 @@ function haversineMiles(a: LatLng, b: LatLng) {
 
 export async function findHolidayInnExpressNearby(
   point: LatLng,
-  radiusMeters: number
+  radiusMeters: number,
+  opts?: { signal?: AbortSignal }
 ): Promise<Hotel[]> {
+  const signal = opts?.signal;
   const overpassUrl =
     process.env.OVERPASS_BASE_URL ?? "https://overpass-api.de/api/interpreter";
 
@@ -70,14 +97,15 @@ out center tags;`;
 
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (attempt > 0) await sleepMs(computeRetryDelayMs(attempt - 1));
-    await sleepMs(interRequestDelayMs);
+    if (attempt > 0) await sleepMs(computeRetryDelayMs(attempt - 1), signal);
+    await sleepMs(interRequestDelayMs, signal);
 
     try {
       const resp = await fetch(overpassUrl, {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
-        body: q
+        body: q,
+        signal
       });
 
       if (!resp.ok) {
@@ -107,12 +135,13 @@ out center tags;`;
           el?.tags?.name ?? el?.tags?.brand ?? "Holiday Inn Express"
         );
         const id = String(el?.id ?? `${lat},${lon}`);
+        const osmType = String(el?.type ?? "unknown");
 
         const coords: LatLng = { lat, lon };
         const miles = haversineMiles(point, coords);
         // Defensive filter: keep only within radius to enforce MVP rule C.
         if (miles * 1609.34 <= radiusMeters) {
-          hotels.push({ id, name, coords });
+          hotels.push({ id, name, coords, osmType });
         }
       }
 
