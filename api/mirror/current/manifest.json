@@ -1,0 +1,35 @@
+{
+  "snapshotId": "2026-03-20T14-51-45-460Z",
+  "schemaVersion": "1.0.0",
+  "createdAt": "2026-03-20T14:51:45.460Z",
+  "builtBy": "snapshot-job",
+  "sourceWindow": {
+    "nrelStartedAt": "2026-03-20T14:51:45.487Z",
+    "nrelCompletedAt": "2026-03-20T14:51:46.327Z",
+    "overpassStartedAt": "2026-03-20T14:51:46.329Z",
+    "overpassCompletedAt": "2026-03-20T14:51:52.816Z"
+  },
+  "counts": {
+    "chargers": 179,
+    "poiHotels": 0
+  },
+  "files": {
+    "chargers": "chargers.ndjson",
+    "poiHotels": "poi_hotels.ndjson"
+  },
+  "provenance": {
+    "nrel": {
+      "baseUrl": "https://developer.nrel.gov/api/alt-fuel-stations/v1/nearest.json",
+      "dataset": "alt-fuel-stations"
+    },
+    "overpass": {
+      "baseUrl": "https://overpass-api.de/api/interpreter",
+      "queryFamily": "holiday-inn-express-hotel"
+    }
+  },
+  "validation": {
+    "passed": true,
+    "warnings": [],
+    "errors": []
+  }
+}

@@ -1,6 +1,6 @@
-import type { Charger } from "../services/nrelClient";
 import { estimateChargeTimeMinutes } from "./chargingTimeModel";
 import type { ItineraryLeg, ItineraryStop, LatLng } from "../types";
+import type { CanonicalCharger } from "../mirror/providerContracts";
 import { haversineMiles, clamp } from "./geo";
 import { getTravelDistanceMiles, getTravelTimeMinutes } from "../services/valhallaClient";
 
@@ -8,7 +8,7 @@ type SegmentInput = {
   requestId: string;
   segmentStart: { id: string; type: "start"; coords: LatLng };
   segmentEnd: { id: string; type: "end"; coords: LatLng };
-  chargers: Charger[];
+  chargers: CanonicalCharger[];
   // Start is assumed to have SOC=1 (100%) at departure and includes no charge time before first leg.
   // Charging happens at charger stops only.
   rangeMiles: number;

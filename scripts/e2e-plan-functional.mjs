@@ -258,6 +258,10 @@ async function main() {
 
   if ((process.env.SPAWN_SERVER ?? "false").toLowerCase() !== "true") {
     console.log(`Running E2E using existing server at ${API_BASE}`);
+    console.log(
+      "\nNote: Case-specific envOverrides in this script only apply when SPAWN_SERVER=true.\n" +
+        "Against a normal dev API, some cases (e.g. overnight + HIE) may fail unless your .env matches those constraints.\n"
+    );
   }
 
   const results = [];
@@ -281,7 +285,7 @@ async function main() {
     } catch (e) {
       const dt = Date.now() - startT;
       results.push({ name: c.name, status: "failed", ms: dt, error: String(e?.message ?? e) });
-      console.error(`Failed in ${dt}ms: ${String(e?.message ?? e)}`);
+      console.error(`Failed [${c.name}] in ${dt}ms: ${String(e?.message ?? e)}`);
     }
   }
 

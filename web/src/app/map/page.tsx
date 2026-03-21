@@ -7,21 +7,64 @@ import type { ItineraryStop, PlanTripResponse } from "../../../../shared/types";
 export default function MapPage() {
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const markersRef = useRef<maplibregl.Marker[]>([]);
+  const candidateMarkersRef = useRef<maplibregl.Marker[]>([]);
+
+  /** F1: clear route + markers immediately on replan (before async state updates). */
+  function clearMapPlanArtifacts() {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const m of markersRef.current) m.remove();
+    markersRef.current = [];
+    for (const m of candidateMarkersRef.current) m.remove();
+    candidateMarkersRef.current = [];
+    for (const lid of ["route-line", "route-line-halo"]) {
+      if (map.getLayer(lid)) map.removeLayer(lid);
+    }
+    if (map.getSource("route-geojson")) map.removeSource("route-geojson");
+  }
 
   const [start, setStart] = useState("Raleigh, NC");
   const [end, setEnd] = useState("Seattle, WA");
+  /** One destination per line (optional). Chained as ordered waypoints between start and end. */
+  const [waypointsText, setWaypointsText] = useState("");
+  const [showChargerCandidates, setShowChargerCandidates] = useState(true);
+  const [showHotelCandidates, setShowHotelCandidates] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<PlanTripResponse | null>(null);
+  /** Per-leg ordered charger locks (Slice 1 UI: single-leg trips only; multi-leg rows stay empty). */
+  const [lockedChargersByLeg, setLockedChargersByLeg] = useState<string[][]>([[]]);
+  const [lockedHotelId, setLockedHotelId] = useState<string | null>(null);
 
-  const apiBase = useMemo(() => process.env.NEXT_PUBLIC_API_BASE ?? "", []);
+  const parsedWaypoints = useMemo(
+    () =>
+      waypointsText
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    [waypointsText]
+  );
+  const legCount = Math.max(1, parsedWaypoints.length + 1);
+  const singleLegTrip = parsedWaypoints.length === 0;
+
+  // `NEXT_PUBLIC_API_BASE` is optional; default to current host for WSL/Windows cross-host dev.
+  const apiBase = useMemo(
+    () => {
+      const fromEnv = process.env.NEXT_PUBLIC_API_BASE?.trim();
+      if (fromEnv) return fromEnv;
+      if (typeof window !== "undefined") return `http://${window.location.hostname}:3001`;
+      return "http://localhost:3001";
+    },
+    []
+  );
 
   useEffect(() => {
     if (!mapEl.current) return;
     if (mapRef.current) return;
 
-    // Public demo style tiles; replace later if you have preferred tile hosting.
-    const styleUrl = "https://demotiles.maplibre.org/style.json";
+    // Basemap with readable city/highway labels.
+    const styleUrl = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json";
     const map = new maplibregl.Map({
       container: mapEl.current,
       style: styleUrl,
@@ -32,6 +75,12 @@ export default function MapPage() {
     map.addControl(new maplibregl.NavigationControl(), "top-right");
     mapRef.current = map;
   }, []);
+
+  useEffect(() => {
+    setLockedChargersByLeg((prev) =>
+      Array.from({ length: legCount }, (_, i) => prev[i] ?? [])
+    );
+  }, [legCount]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -50,9 +99,21 @@ export default function MapPage() {
     // Markers: simplest MVP—remove any previous markers by rebuilding after each plan.
     // (In production, keep marker refs to avoid churn.)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    if (!plan) return;
+    if (!plan) {
+      for (const m of markersRef.current) m.remove();
+      markersRef.current = [];
+      return;
+    }
 
-    if (plan.stops.length === 0) return;
+    if (plan.stops.length === 0) {
+      for (const m of markersRef.current) m.remove();
+      markersRef.current = [];
+      return;
+    }
+
+    // Clear markers from previous plan render.
+    for (const m of markersRef.current) m.remove();
+    markersRef.current = [];
 
     // Fit view to stops.
     const bounds = plan.stops.reduce(
@@ -102,14 +163,14 @@ export default function MapPage() {
         type: "line",
         source: "route-geojson",
         layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#000000", "line-width": 6, "line-opacity": 0.25 }
+        paint: { "line-color": "#000000", "line-width": 10, "line-opacity": 0.22 }
       });
       map.addLayer({
         id: "route-line",
         type: "line",
         source: "route-geojson",
         layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#0b7cff", "line-width": 3 }
+        paint: { "line-color": "#0b7cff", "line-width": 5 }
       });
     } else {
       // Fallback: connect stops in order.
@@ -128,10 +189,12 @@ export default function MapPage() {
           type: "line",
           source: "route-geojson",
           layout: { "line-join": "round", "line-cap": "round" },
-          paint: { "line-color": "#0b7cff", "line-width": 3 }
+          paint: { "line-color": "#0b7cff", "line-width": 5 }
         });
       }
     }
+
+    // Candidate markers are handled in a separate effect (layers + toggles).
 
     // Stop markers.
     for (const s of plan.stops) {
@@ -140,36 +203,141 @@ export default function MapPage() {
           ? "#1b6ef3"
           : s.type === "end"
             ? "#9b59b6"
-            : s.type === "sleep"
-              ? "#ff8c00"
-              : "#00b894"; // charge
-
-      new maplibregl.Marker({ color }).setLngLat([s.coords.lon, s.coords.lat]).addTo(map);
+            : s.type === "waypoint"
+              ? "#6c5ce7"
+              : s.type === "sleep"
+                ? "#ff8c00"
+                : "#00b894"; // charge
+      const marker = new maplibregl.Marker({ color })
+        .setLngLat([s.coords.lon, s.coords.lat])
+        .addTo(map);
+      markersRef.current.push(marker);
     }
   }, [plan]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const m of candidateMarkersRef.current) m.remove();
+    candidateMarkersRef.current = [];
+    if (!plan || plan.status !== "ok" || !plan.candidates) return;
+
+    if (showChargerCandidates) {
+      for (const c of plan.candidates.chargers) {
+        const locked =
+          singleLegTrip && lockedChargersByLeg[0]?.includes(c.id);
+        const marker = new maplibregl.Marker({
+          color: locked ? "#14532d" : "#2d8a5e"
+        })
+          .setLngLat([c.coords.lon, c.coords.lat])
+          .addTo(map);
+        const el = marker.getElement();
+        el.style.cursor = singleLegTrip ? "pointer" : "default";
+        if (singleLegTrip) {
+          el.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            setLockedChargersByLeg((rows) => {
+              const row = [...(rows[0] ?? [])];
+              const i = row.indexOf(c.id);
+              if (i >= 0) row.splice(i, 1);
+              else row.push(c.id);
+              const next = [...rows];
+              next[0] = row;
+              return next;
+            });
+          });
+        }
+        candidateMarkersRef.current.push(marker);
+      }
+    }
+    if (showHotelCandidates) {
+      for (const h of plan.candidates.hotels) {
+        const sel = singleLegTrip && lockedHotelId === h.id;
+        const marker = new maplibregl.Marker({
+          color: sel ? "#922b21" : "#e17055"
+        })
+          .setLngLat([h.coords.lon, h.coords.lat])
+          .addTo(map);
+        const el = marker.getElement();
+        el.style.cursor = singleLegTrip ? "pointer" : "default";
+        if (singleLegTrip) {
+          el.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            setLockedHotelId((cur) => (cur === h.id ? null : h.id));
+          });
+        }
+        candidateMarkersRef.current.push(marker);
+      }
+    }
+  }, [
+    plan,
+    showChargerCandidates,
+    showHotelCandidates,
+    singleLegTrip,
+    lockedChargersByLeg,
+    lockedHotelId
+  ]);
+
+  function classifyPlanError(e: unknown, resp: Response | null): string {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      const ms = Number(process.env.NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS ?? 130000);
+      return `Request timed out after ${Math.round(ms / 1000)}s. Try a shorter route or retry.`;
+    }
+    if (e instanceof TypeError && /fetch|Load failed|NetworkError/i.test(String(e.message))) {
+      return "Network error: could not reach the planner API. Check that the API is running and CORS allows this origin.";
+    }
+    if (resp?.status === 408) {
+      return "The planner took too long (server time limit). Try a shorter route or retry later.";
+    }
+    if (resp?.status === 400 || resp?.status === 500 || resp?.status === 502) {
+      return e instanceof Error ? e.message : "Planning failed";
+    }
+    return e instanceof Error ? e.message : "Planning failed";
+  }
+
   async function onPlanTrip() {
+    clearMapPlanArtifacts();
     setLoading(true);
     setError(null);
     setPlan(null);
+    const clientMs = Number(process.env.NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS ?? 130000);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), clientMs);
+    let resp: Response | null = null;
     try {
-      const apiUrl = apiBase ? `${apiBase}/plan` : "/plan";
-      const resp = await fetch(apiUrl, {
+      const apiUrl = `${apiBase.replace(/\/$/, "")}/plan`;
+      const wps = parsedWaypoints;
+      const locks = lockedChargersByLeg.slice(0, legCount).map((r) => [...r]);
+      const hasLocks = locks.some((r) => r.length > 0);
+      const body: Record<string, unknown> = {
+        start,
+        end,
+        includeCandidates: true,
+        ...(wps.length ? { waypoints: wps } : {}),
+        ...(hasLocks ? { lockedChargersByLeg: locks } : {}),
+        ...(lockedHotelId ? { lockedHotelId } : {})
+      };
+      resp = await fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ start, end })
+        body: JSON.stringify(body),
+        signal: controller.signal
       });
-      const json = (await resp.json()) as PlanTripResponse;
+      let json: PlanTripResponse;
+      try {
+        json = (await resp.json()) as PlanTripResponse;
+      } catch {
+        throw new Error(`Invalid response from planner (HTTP ${resp.status}).`);
+      }
       if (!resp.ok) {
-        // Keep the full error payload so we can surface `debug` in the UI.
         setPlan(json);
-        throw new Error(json.message ?? "Planning failed");
+        throw new Error(json.message ?? `Planning failed (HTTP ${resp.status})`);
       }
       setPlan(json);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Planning failed";
-      setError(msg);
+      setError(classifyPlanError(e, resp));
     } finally {
+      window.clearTimeout(timer);
       setLoading(false);
     }
   }
@@ -177,7 +345,16 @@ export default function MapPage() {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "420px 1fr", height: "100vh" }}>
       <div style={{ padding: 16, borderRight: "1px solid #e5e5e5", overflow: "auto" }}>
-        <h1 style={{ margin: 0, fontSize: 20 }}>EV Travel Planner (MVP)</h1>
+        <h1 style={{ margin: 0, fontSize: 20 }}>EV Travel Planner (v2)</h1>
+        <p style={{ margin: "6px 0 0 0", fontSize: 12, color: "#555" }}>
+          Along-route charger + hotel candidates (when returned by the API) appear as green / coral markers; the
+          itinerary uses blue / purple / orange / green for stops.
+        </p>
+        <p style={{ margin: "8px 0 0 0", fontSize: 12, color: "#555" }}>
+          <strong>Locks (single segment only):</strong> click a green charger to require it on the route; click
+          coral hotel to prefer it for overnight (when needed). Clear locks by clicking again. Multi-stop waypoints
+          disable map locking for now.
+        </p>
 
         <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
           <label>
@@ -196,10 +373,54 @@ export default function MapPage() {
               style={{ width: "100%", padding: 8 }}
             />
           </label>
+          <label>
+            <div style={{ marginBottom: 6 }}>Waypoints (optional, one per line)</div>
+            <textarea
+              value={waypointsText}
+              onChange={(e) => setWaypointsText(e.target.value)}
+              placeholder="Charlotte, NC"
+              rows={3}
+              style={{ width: "100%", padding: 8, fontFamily: "inherit" }}
+            />
+          </label>
+
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 13 }}>
+            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={showChargerCandidates}
+                onChange={(e) => setShowChargerCandidates(e.target.checked)}
+              />
+              Show charger candidates
+            </label>
+            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={showHotelCandidates}
+                onChange={(e) => setShowHotelCandidates(e.target.checked)}
+              />
+              Show hotel candidates
+            </label>
+          </div>
 
           <button onClick={onPlanTrip} disabled={loading} style={{ padding: 10 }}>
             {loading ? "Planning..." : "Plan Trip"}
           </button>
+          {singleLegTrip ? (
+            <div style={{ fontSize: 12, color: "#444" }}>
+              <div>
+                Locked chargers:{" "}
+                {lockedChargersByLeg[0]?.length
+                  ? lockedChargersByLeg[0].join(", ")
+                  : "(none)"}
+              </div>
+              <div>Locked hotel: {lockedHotelId ?? "(none)"}</div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: "#888" }}>
+              Add locks after clearing waypoints (single driving segment only in this UI).
+            </div>
+          )}
         </div>
 
         {error ? (
@@ -234,7 +455,6 @@ export default function MapPage() {
 
             <h3 style={{ margin: "16px 0 8px 0", fontSize: 14 }}>Turn-by-turn (MVP)</h3>
             {(() => {
-              const stopById = new Map(plan.stops.map((s) => [s.id, s]));
               const legByPair = new Map(
                 plan.legs.map((l) => [`${l.fromStopId}->${l.toStopId}`, l])
               );

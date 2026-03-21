@@ -1,5 +1,7 @@
 # PRD: EV Trip Planning QA-Driven Requirements
 
+**System map (implementation + ops):** see **[docs/V1_SYSTEM.md](docs/V1_SYSTEM.md)** and **[docs/README.md](docs/README.md)** for a minimal reconstruction path alongside this PRD.
+
 ## Overview
 This document converts the existing QA “known invariants” in `TESTING.md` into a starter PRD. The goal is to make the expected behavior of the trip-planning feature explicit and repeatable.
 
@@ -201,4 +203,29 @@ Repo hygiene requirement (before running `/qa`):
 ## Open Questions
 1. Should the overnight anchor selection logic be invariant to whether the threshold is crossed during/after the last charge segment, or is the current intended behavior acceptable?
 2. Should the UI requirement include confirmation of `debug` rendering only when a failure occurs, or also in success cases?
+
+---
+
+## Version 2 (product / interactive planning)
+
+**Normative API + types:** see **[docs/V2_API.md](docs/V2_API.md)**. **Optional** features: omitting v2 fields preserves **v1 A→B** behavior and existing QA invariants.
+
+### V2 goals
+1. **Along-route discovery:** users can see **charger** and **hotel** candidates on/near the corridor (map layers) using **server-returned candidate IDs** (same universe as planning). Picks must reference IDs the planner can consume (future: explicit locks in `POST /plan`).
+2. **Ordered multi-destination:** optional **`waypoints`** array (geocoded strings) between `start` and `end`. The planner **chains legs** sequentially; intermediate endpoints appear as **`waypoint`** stops in the itinerary.
+3. **Interactive adjustments (roadmap):** user-selected charge + overnight hotel + replan (constraints API) — **not fully specified here**; see `docs/V2_API.md` for request/response extensions and **docs/V2_CHERRY_PICKS.md** for gated extras.
+
+### V2 non-goals (baseline)
+1. Deterministic routes across replans (still non-goal).
+2. Automatic TSP “reorder waypoints for shortest time” (cherry-pick / future).
+
+### V2 configuration (environment)
+| Variable | Purpose |
+|----------|---------|
+| `V2_MAX_WAYPOINTS` | Max intermediate waypoints (default `8`). |
+| `V2_HOTEL_MAP_PREVIEW` | When not `false`, hotel candidate pins may query Overpass near a corridor sample (default enabled). |
+
+### V2 verification
+- **Regression:** v1 QA cases unchanged when **`waypoints` omitted** and behavior matches prior `mvp-1` responses.
+- **Smoke:** `npm run qa:smoke` remains green; see `TESTING.md` § Version 2.
 

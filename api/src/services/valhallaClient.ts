@@ -7,6 +7,18 @@ export class ValhallaError extends Error {
   }
 }
 
+/** Initial `/route` polyline for corridor sampling (`planTrip`). */
+function polylineAbortSignal(): AbortSignal | undefined {
+  const ms = Number(process.env.PLAN_VALHALLA_POLYLINE_TIMEOUT_MS ?? "60000");
+  return Number.isFinite(ms) && ms > 0 ? AbortSignal.timeout(Math.floor(ms)) : undefined;
+}
+
+/** Per-leg `/route` calls inside the segment solver (`leastTimeSegment`). */
+function legRouteAbortSignal(): AbortSignal | undefined {
+  const ms = Number(process.env.PLAN_VALHALLA_LEG_TIMEOUT_MS ?? "30000");
+  return Number.isFinite(ms) && ms > 0 ? AbortSignal.timeout(Math.floor(ms)) : undefined;
+}
+
 function extractLineStringFromValhalla(json: any): ItineraryLeg["geometry"] | undefined {
   const leg = json?.trip?.legs?.[0];
   const shape = leg?.shape;
@@ -32,12 +44,14 @@ function extractLineStringFromValhalla(json: any): ItineraryLeg["geometry"] | un
 export async function getRoutePolyline(from: LatLng, to: LatLng): Promise<ItineraryLeg["geometry"]> {
   const baseUrl = process.env.VALHALLA_BASE_URL ?? "http://valhalla:8002";
   const url = `${baseUrl}/route`;
+  const signal = polylineAbortSignal();
 
   let resp: Response;
   try {
     resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal,
       body: JSON.stringify({
         locations: [
           { lat: from.lat, lon: from.lon },
@@ -51,6 +65,13 @@ export async function getRoutePolyline(from: LatLng, to: LatLng): Promise<Itiner
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    const name = e instanceof Error ? e.name : "";
+    if (name === "AbortError" || msg.toLowerCase().includes("abort")) {
+      const ms = process.env.PLAN_VALHALLA_POLYLINE_TIMEOUT_MS ?? "60000";
+      throw new ValhallaError(
+        `Valhalla route timed out (PLAN_VALHALLA_POLYLINE_TIMEOUT_MS=${ms}ms)`
+      );
+    }
     throw new ValhallaError(`Valhalla fetch failed at ${url}: ${msg}`);
   }
 
@@ -83,12 +104,14 @@ function getDistanceMilesFromResponse(json: any): number | null {
 export async function getTravelTimeMinutes(from: LatLng, to: LatLng): Promise<number> {
   const baseUrl = process.env.VALHALLA_BASE_URL ?? "http://valhalla:8002";
   const url = `${baseUrl}/route`;
+  const signal = legRouteAbortSignal();
 
   let resp: Response;
   try {
     resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal,
       body: JSON.stringify({
         locations: [
           { lat: from.lat, lon: from.lon },
@@ -103,6 +126,13 @@ export async function getTravelTimeMinutes(from: LatLng, to: LatLng): Promise<nu
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    const name = e instanceof Error ? e.name : "";
+    if (name === "AbortError" || msg.toLowerCase().includes("abort")) {
+      const ms = process.env.PLAN_VALHALLA_LEG_TIMEOUT_MS ?? "30000";
+      throw new ValhallaError(
+        `Valhalla route timed out (PLAN_VALHALLA_LEG_TIMEOUT_MS=${ms}ms)`
+      );
+    }
     throw new ValhallaError(`Valhalla fetch failed at ${url}: ${msg}`);
   }
 
@@ -122,12 +152,14 @@ export async function getTravelTimeMinutes(from: LatLng, to: LatLng): Promise<nu
 export async function getTravelDistanceMiles(from: LatLng, to: LatLng): Promise<number> {
   const baseUrl = process.env.VALHALLA_BASE_URL ?? "http://valhalla:8002";
   const url = `${baseUrl}/route`;
+  const signal = legRouteAbortSignal();
 
   let resp: Response;
   try {
     resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal,
       body: JSON.stringify({
         locations: [
           { lat: from.lat, lon: from.lon },
@@ -141,6 +173,13 @@ export async function getTravelDistanceMiles(from: LatLng, to: LatLng): Promise<
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    const name = e instanceof Error ? e.name : "";
+    if (name === "AbortError" || msg.toLowerCase().includes("abort")) {
+      const ms = process.env.PLAN_VALHALLA_LEG_TIMEOUT_MS ?? "30000";
+      throw new ValhallaError(
+        `Valhalla route timed out (PLAN_VALHALLA_LEG_TIMEOUT_MS=${ms}ms)`
+      );
+    }
     throw new ValhallaError(`Valhalla fetch failed at ${url}: ${msg}`);
   }
 

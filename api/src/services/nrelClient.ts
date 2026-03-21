@@ -14,8 +14,31 @@ export class NrelError extends Error {
   }
 }
 
-function sleepMs(ms: number) {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+function sleepMs(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("Aborted"));
+      return;
+    }
+
+    const t = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      clearTimeout(t);
+      cleanup();
+      reject(signal?.reason ?? new Error("Aborted"));
+    };
+
+    const cleanup = () => {
+      if (!signal) return;
+      signal.removeEventListener("abort", onAbort);
+    };
+
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function computeRetryDelayMs(attempt: number) {
@@ -92,8 +115,10 @@ function dedupeByLatLon(chargers: Charger[], precision = 4) {
 
 export async function fetchDcFastChargersNearPoint(
   point: LatLng,
-  radiusMiles: number
+  radiusMiles: number,
+  opts?: { signal?: AbortSignal }
 ): Promise<Charger[]> {
+  const signal = opts?.signal;
   const apiKey = process.env.NREL_API_KEY;
   if (!apiKey) {
     throw new NrelError("Missing NREL_API_KEY env var");
@@ -128,13 +153,15 @@ export async function fetchDcFastChargersNearPoint(
     if (attempt > 0) {
       const delay = forcedDelayMs ?? computeRetryDelayMs(attempt);
       forcedDelayMs = null;
-      await sleepMs(delay);
+      await sleepMs(delay, signal);
     }
 
     // eslint-disable-next-line no-await-in-loop
-    await sleepMs(interRequestDelayMs);
+    await sleepMs(interRequestDelayMs, signal);
 
-    const resp = await fetch(url);
+    if (signal?.aborted) throw new NrelError("Aborted");
+
+    const resp = await fetch(url, { signal });
     lastStatus = resp.status;
 
     if (resp.status === 429 && attempt < maxAttempts - 1) {
@@ -183,8 +210,10 @@ export async function fetchDcFastChargersNearPoint(
 
 export async function fetchElectricChargersNearPoint(
   point: LatLng,
-  radiusMiles: number
+  radiusMiles: number,
+  opts?: { signal?: AbortSignal }
 ): Promise<Charger[]> {
+  const signal = opts?.signal;
   const apiKey = process.env.NREL_API_KEY;
   if (!apiKey) {
     throw new NrelError("Missing NREL_API_KEY env var");
@@ -220,13 +249,15 @@ export async function fetchElectricChargersNearPoint(
       const delay = forcedDelayMs ?? computeRetryDelayMs(attempt);
       forcedDelayMs = null;
       // eslint-disable-next-line no-await-in-loop
-      await sleepMs(delay);
+      await sleepMs(delay, signal);
     }
 
     // eslint-disable-next-line no-await-in-loop
-    await sleepMs(interRequestDelayMs);
+    await sleepMs(interRequestDelayMs, signal);
 
-    const resp = await fetch(url);
+    if (signal?.aborted) throw new NrelError("Aborted");
+
+    const resp = await fetch(url, { signal });
     lastStatus = resp.status;
 
     if (resp.status === 429 && attempt < maxAttempts - 1) {
@@ -280,8 +311,10 @@ function toWktLineString(routePoints: LatLng[]) {
 
 export async function fetchDcFastChargersNearRoute(
   routePoints: LatLng[],
-  distanceMiles: number
+  distanceMiles: number,
+  opts?: { signal?: AbortSignal }
 ): Promise<Charger[]> {
+  const signal = opts?.signal;
   const apiKey = process.env.NREL_API_KEY;
   if (!apiKey) {
     throw new NrelError("Missing NREL_API_KEY env var");
@@ -323,21 +356,22 @@ export async function fetchDcFastChargersNearRoute(
       const delay = forcedDelayMs ?? computeRetryDelayMs(attempt);
       forcedDelayMs = null;
       // eslint-disable-next-line no-await-in-loop
-      await sleepMs(delay);
+      await sleepMs(delay, signal);
     }
 
     // eslint-disable-next-line no-await-in-loop
-    await sleepMs(interRequestDelayMs);
+    await sleepMs(interRequestDelayMs, signal);
 
     // Prefer GET first: it works reliably for small route strings.
     // Fall back to POST when URL length would be excessive.
     const resp =
       fullGetUrl.length <= maxGetUrlLength
-        ? await fetch(fullGetUrl)
+        ? await fetch(fullGetUrl, { signal })
         : await fetch(baseUrl, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: params
+            body: params,
+            signal
           });
     lastStatus = resp.status;
 
