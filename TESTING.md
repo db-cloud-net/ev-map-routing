@@ -20,6 +20,33 @@ The backend functional layer is especially important because external services (
 
 `api/dist/` is not committed; run **`npm -w api run build`** before **`npm -w api run start`** (production-style). For local dev, **`npm -w api run dev`** runs TypeScript directly.
 
+### gstack browse (interactive `/qa` + screenshots)
+
+Use this when you want **headless UI QA** (gstack `/qa`) or to drive the map from the **`browse.exe`** CLI instead of only a normal browser.
+
+**One-time setup**
+
+| OS | Command | Requires |
+|----|---------|----------|
+| **Windows** | `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\gstack\setup.ps1"` | [Bun](https://bun.sh/) (`bun --version`), Git |
+| **macOS / Linux** | `bash ~/.claude/skills/gstack/setup` (from repo: same path under your home dir) | Bun, Git |
+
+The script builds **`browse`** and installs **Playwright Chromium**. After setup, the binary is:
+
+- **Windows:** `%USERPROFILE%\.claude\skills\gstack\browse\dist\browse.exe`
+- **Unix:** `~/.claude/skills/gstack/browse/dist/browse`
+
+**Each QA session (before `/qa` or browse)**
+
+1. **`.env`** at repo root: copy from **`.env.example`**, set **`NREL_API_KEY`**, **`CORS_ORIGIN=http://localhost:3000`**, **`DEPLOYMENT_ENV=dev-local`** (see below for planner URLs if you use Valhalla).
+2. **Two terminals** from repo root: **`npm run dev:api`** (port **3001**) and **`npm run dev:web`** (port **3000**).
+3. **Sanity check:** open **`http://localhost:3000/map`** in a browser or run browse:
+   - PowerShell: `& "$env:USERPROFILE\.claude\skills\gstack\browse\dist\browse.exe" goto http://localhost:3000/map`
+4. **Git:** `/qa` expects a **clean working tree** (`git status` empty) — commit or stash before running the skill.
+5. **Automated layer (no UI):** `npm run qa:smoke` — should stay green before you rely on manual/browse QA.
+
+**Full manual pass:** follow **§ Version 2 smoke** below (map, candidates, waypoints, locks). **Planner E2E (optional):** `node scripts/e2e-plan-functional.mjs` (or `SPAWN_SERVER=true` per that script) — separate from `qa:smoke`.
+
 ### Environment variable source
 
 Keep secrets in `.env` (already supported by `api/src/server.ts`).
