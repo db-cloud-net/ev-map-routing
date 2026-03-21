@@ -76,18 +76,16 @@ User replans from **current** coordinates or a **planned stop** to **`end`** (an
 
 ---
 
-## Slice 3 (proposal) — `POST /candidates`
+## Slice 3 — `POST /candidates`
 
-**Status:** **Not implemented** in the API yet — see **[`docs/designs/slice3-get-candidates.md`](designs/slice3-get-candidates.md)** (spike: goals, body shape, refactor plan, open questions).
+**Design notes & rollout:** **[`docs/designs/slice3-get-candidates.md`](designs/slice3-get-candidates.md)**.
 
-**Intent:** Return the **same** `PlanTripCandidates` id universe as **`POST /plan`** with `includeCandidates: true`, **without** requiring a full itinerary solve — to support progressive map UX ([**ROUTING_UX_SPEC.md**](ROUTING_UX_SPEC.md) §3).
-
-**Planned surface (summary):**
+**Intent:** Return the **same** `PlanTripCandidates` id universe as **`POST /plan`** with `includeCandidates: true`, **without** running the least-time itinerary solver — for progressive map UX ([**ROUTING_UX_SPEC.md**](ROUTING_UX_SPEC.md) §3).
 
 | | |
 |--|--|
 | **Method** | `POST /candidates` |
-| **Body** | Subset of **`PlanTripRequest`**: `end`, and either `start` or **`replanFrom`** (+ `previousStops` when using `stopId`); optional `waypoints`. **No** `lockedChargersByLeg` / `lockedHotelId`. |
-| **Response** | `status`, `requestId`, `responseVersion`, optional **`candidates`** (`PlanTripCandidates`), optional **`errorCode`** / `message` on failure. |
+| **Body** | Same trip inputs as **`PlanTripRequest`** **except** omit `includeCandidates`, `lockedChargersByLeg`, and `lockedHotelId`: `end`, and either `start` or **`replanFrom`** (+ `previousStops` when using `stopId`); optional `waypoints`. |
+| **Response** | `status`, `requestId`, `responseVersion` (**`v2-1-candidates`**), optional **`candidates`** (`PlanTripCandidates`), optional **`errorCode`** / `message` on failure. **No** `stops` / `legs` / `totals`. |
 
-Baseline v2 remains: candidates **embedded** in **`POST /plan`** only until Slice 3 ships.
+**Regression:** Baseline behavior unchanged: **`POST /plan`** with `includeCandidates` still returns candidates inside the plan response.

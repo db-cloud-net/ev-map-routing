@@ -42,5 +42,8 @@ runStep("e2e-plan-log-contract.mjs", "node", [
 runStep("e2e-replan-smoke.mjs", "node", [
   path.join(root, "scripts", "e2e-replan-smoke.mjs")
 ]);
+runStep("e2e-candidates-smoke.mjs", "node", [
+  path.join(root, "scripts", "e2e-candidates-smoke.mjs")
+]);
 
 console.log("\n[qa:smoke] All steps passed.\n");

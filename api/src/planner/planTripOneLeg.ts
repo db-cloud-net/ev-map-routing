@@ -7,16 +7,8 @@ import type {
 import { NoFeasibleItineraryError, planLeastTimeSegment } from "./leastTimeSegment";
 import { planTripOneLegLockedChargerChain } from "./planTripOneLegLocked";
 import { haversineMiles } from "./geo";
-import { getRoutePolyline } from "../services/valhallaClient";
-import { samplePointsAlongPolyline } from "./roadSampling";
 import { resolvePlanProviders } from "../sourceRouter";
-
-function interpolateLatLng(a: LatLng, b: LatLng, t: number): LatLng {
-  return {
-    lat: a.lat + (b.lat - a.lat) * t,
-    lon: a.lon + (b.lon - a.lon) * t
-  };
-}
+import { fetchCorridorChargersForLeg } from "./corridorCandidates";
 
 export type PlanTripOneLegInput = {
   requestId: string;
@@ -104,122 +96,30 @@ export async function planTripOneLegFromCoords(
       endLabel: input.endQueryLabel
     });
 
-    // 2) Fetch candidate DC fast chargers along corridor.
-    // MVP "A": sample points along the Valhalla route polyline (road-based), but keep
-    // feasibility checks inside the segment planner using straight-line (haversine).
-    const radiusMiles = Number(process.env.NREL_RADIUS_MILES ?? "30");
-    const stepMiles = Number(process.env.CORRIDOR_STEP_MILES ?? "30");
-    const maxCorridorSamples = Number(process.env.CORRIDOR_MAX_SAMPLE_POINTS ?? "80");
     const candidateChargersCap = Number(process.env.CANDIDATE_CHARGERS_CAP ?? "25");
     const includeAllElectricChargers =
-      (process.env.NREL_INCLUDE_ALL_ELECTRIC_CHARGERS ?? "false").toLowerCase() ===
-      "true";
-    const chargerPointMode: ChargerPointMode = includeAllElectricChargers
-      ? "electric_all"
-      : "dc_fast";
-    const useNearbyRoute =
-      (process.env.USE_NREL_NEARBY_ROUTE ?? "false").toLowerCase() === "true";
+      (process.env.NREL_INCLUDE_ALL_ELECTRIC_CHARGERS ?? "false").toLowerCase() === "true";
 
-    let samplePoints: LatLng[] = [];
-    const polyT0 = Date.now();
-    try {
-      const poly = await getRoutePolyline(startCoords, endCoords);
-      const valhallaMs = Date.now() - polyT0;
-      samplePoints = samplePointsAlongPolyline(
-        poly as { type: "LineString"; coordinates: [number, number][] },
-        stepMiles,
-        maxCorridorSamples
-      );
-      logEvent("provider_valhalla_polyline", {
-        durationMs: valhallaMs,
-        corridorSamplesUsed: samplePoints.length
-      });
-    } catch (e) {
-      // Time includes the failed Valhalla `/route` attempt (network, timeout, bad response, etc.).
-      const valhallaAttemptMs = Date.now() - polyT0;
-      const errMsg = e instanceof Error ? e.message : String(e);
-      logEvent("provider_valhalla_polyline_failed", {
-        durationMs: valhallaAttemptMs,
-        error: errMsg.length > 300 ? `${errMsg.slice(0, 300)}…` : errMsg
-      });
-
-      // Fallback to straight-line sampling if Valhalla geometry isn't available.
-      const fallbackT0 = Date.now();
-      const approxMiles = haversineMiles(startCoords, endCoords);
-      // Ensure we still respect CORRIDOR_MAX_SAMPLE_POINTS in fallback mode,
-      // otherwise charger sampling can explode into too many NREL requests.
-      const rawSampleCount = Math.max(5, Math.ceil(approxMiles / stepMiles));
-      const approxSampleCount = Math.min(rawSampleCount, maxCorridorSamples);
-      for (let i = 0; i < approxSampleCount; i++) {
-        const t = approxSampleCount <= 1 ? 0 : i / (approxSampleCount - 1);
-        samplePoints.push(interpolateLatLng(startCoords, endCoords, t));
-      }
-      logEvent("provider_valhalla_polyline_fallback", {
-        valhallaAttemptMs,
-        fallbackBuildMs: Date.now() - fallbackT0,
-        corridorSamplesUsed: samplePoints.length,
-        approxMiles: Math.round(approxMiles * 10) / 10
-      });
-    }
-
-    // Ensure NREL route corridor actually includes the exact endpoints.
-    // `samplePointsAlongPolyline()` may dedupe points near the ends, which can
-    // accidentally exclude the final `endCoords` from the WKT line string.
-    if (samplePoints.length > 0) {
-      const startD = haversineMiles(samplePoints[0], startCoords);
-      if (startD > 0.05) samplePoints.unshift(startCoords);
-
-      const endD = haversineMiles(samplePoints[samplePoints.length - 1], endCoords);
-      if (endD > 0.05) samplePoints.push(endCoords);
-    }
-
-    let chargers: CanonicalCharger[] = [];
-    const nrelCorridorT0 = Date.now();
-    if (useNearbyRoute && samplePoints.length >= 2) {
-      chargers = await chargersProvider.findChargersNearRoute(
-        samplePoints,
-        radiusMiles,
-        "dc_fast",
-        { requestId: input.requestId }
-      );
-    } else {
-      // Default MVP behavior: query NREL around multiple points along the corridor.
-      const chargersById = new Map<string, CanonicalCharger>();
-      for (const p of samplePoints) {
-        const chargersNearPoint = await chargersProvider.findChargersNearPoint(
-          p,
-          radiusMiles,
-          chargerPointMode,
-          { requestId: input.requestId }
-        );
-        for (const c of chargersNearPoint) chargersById.set(c.id, c);
-      }
-      chargers = Array.from(chargersById.values());
-    }
-    logEvent("provider_nrel_corridor_chargers", {
-      durationMs: Date.now() - nrelCorridorT0,
-      mode: useNearbyRoute ? "nearby-route" : "nearby-point",
-      corridorSamplesUsed: samplePoints.length,
-      chargersFoundTotal: chargers.length
+    // 2) Fetch candidate DC fast chargers along corridor (shared with POST /candidates).
+    const corridor = await fetchCorridorChargersForLeg({
+      requestId: input.requestId,
+      legIndex: input.legIndex ?? 0,
+      startCoords,
+      endCoords,
+      includeCandidates: Boolean(input.includeCandidates),
+      chargersProvider,
+      poisProvider,
+      logEvent,
+      overnightHotelRadiusMeters
     });
 
-    debug.chargersFoundTotal = chargers.length;
-    debug.corridorSampling = {
-      stepMiles,
-      nrelRadiusMiles: radiusMiles,
-      corridorSamplesUsed: samplePoints.length,
-      corridorMaxSamples: maxCorridorSamples,
-      chargersCandidateCap: candidateChargersCap,
-      mode: useNearbyRoute ? "nearby-route" : "nearby-point"
-    };
-
-    if (!chargers.length) {
+    if (!corridor.ok) {
       return {
         requestId: input.requestId,
         responseVersion: input.responseVersion,
         status: "error",
-        message: "No EV charging stops found for the trip.",
-        debug,
+        message: corridor.message,
+        debug: { ...debug, ...corridor.debug },
         stops: [],
         legs: [],
         totals: {
@@ -232,49 +132,15 @@ export async function planTripOneLegFromCoords(
       };
     }
 
+    debug.chargersFoundTotal = corridor.debug.chargersFoundTotal;
+    debug.corridorSampling = corridor.debug.corridorSampling;
+
+    const chargers = corridor.chargers;
+    const candidatesForResponse = corridor.candidatesForResponse;
+
     // Important: NREL results are not guaranteed to be sorted by distance.
     // We will pick the nearest candidates per segment below.
     const chargerCandidates = chargers;
-
-    /** Along-route map preview: same charger universe as planning; optional hotel preview (Overpass). */
-    let candidatesForResponse: PlanTripResponse["candidates"] | undefined;
-    if (input.includeCandidates && chargers.length) {
-      const chargerRows = chargers.slice(0, 500).map((c) => ({
-        id: String(c.id),
-        name: c.name,
-        coords: c.coords,
-        maxPowerKw: c.maxPowerKw,
-        source: "nrel" as const
-      }));
-      const hotelRows: NonNullable<PlanTripResponse["candidates"]>["hotels"] = [];
-      const hotelPreviewEnabled =
-        (process.env.V2_HOTEL_MAP_PREVIEW ?? "true").toLowerCase() !== "false";
-      if (hotelPreviewEnabled && samplePoints.length) {
-        const mid = samplePoints[Math.floor(samplePoints.length / 2)] ?? samplePoints[0];
-        try {
-          const hotels = await poisProvider.findHolidayInnExpressHotelsNearPoint(
-            mid,
-            Math.min(120000, overnightHotelRadiusMeters * 4),
-            { requestId: input.requestId }
-          );
-          for (const h of hotels.slice(0, 40)) {
-            hotelRows.push({
-              id: h.id,
-              name: h.name,
-              coords: h.coords,
-              source: "overpass" as const
-            });
-          }
-        } catch {
-          // ignore — map still shows chargers
-        }
-      }
-      candidatesForResponse = {
-        chargers: chargerRows,
-        hotels: hotelRows,
-        legIndex: input.legIndex ?? 0
-      };
-    }
 
     if (input.lockedChargerIdsOrdered?.length) {
       const finalEnd = { id: input.endStopId, type: "end" as const, coords: endCoords };

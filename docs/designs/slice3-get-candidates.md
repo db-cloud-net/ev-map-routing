@@ -1,7 +1,7 @@
 # Slice 3 — dedicated candidates endpoint (design spike)
 
-**Status:** Spike / proposal — **not implemented** in API until an implementation PR lands.  
-**Normative contract (when built):** will live in **[../V2_API.md](../V2_API.md)** (Slice 3 section).  
+**Status:** **Implemented** — `POST /candidates` on the API; see **[../V2_API.md](../V2_API.md)** § Slice 3.  
+**Normative contract:** **[../V2_API.md](../V2_API.md)** (Slice 3 section).  
 **Product context:** **[PRD.md](../../PRD.md)** § Version 2 · Slice 3; **[ROUTING_UX_SPEC.md](../ROUTING_UX_SPEC.md)** §3 (~60s first screen) and progressive delivery.
 
 ---
@@ -69,8 +69,8 @@ For **progressive UX** (rough route + map context early, refinements later), we 
 | Phase | Deliverable |
 |-------|-------------|
 | **0** | This doc + **V2_API.md** / **PRD** pointers (**spike complete**). |
-| **1** | Extract shared corridor-candidate fetch; unit or integration tests against existing `/plan` candidate sets for a fixed fixture route. |
-| **2** | **`POST /candidates`** route + Zod + **`TESTING.md`** + optional E2E. |
+| **1** | **Done** — shared **`fetchCorridorChargersForLeg`** in **`api/src/planner/corridorCandidates.ts`** (used by **`planTripOneLeg`** and **`planTripCandidatesOnly`**). |
+| **2** | **Done** — **`POST /candidates`** + Zod + **`e2e-candidates-smoke.mjs`** in **`qa:smoke`**. |
 | **3** | Map UI: optional prefetch path (feature-flag or always-on per product). |
 
 ---

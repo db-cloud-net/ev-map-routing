@@ -14,7 +14,7 @@
 
 1. ~~**Commit / push**~~ — **`main`** pushed to origin (2026-03-21); dev API **ts-node-dev** listen stability in **`c07bf96`**.
 2. ~~**Manual verify**~~ — **Done** — see **Manual QA** above.
-3. **Next** — **Slice 3** **`POST /candidates`** — **spike doc:** [`docs/designs/slice3-get-candidates.md`](docs/designs/slice3-get-candidates.md); **PRD** § Slice 3; **[`docs/V2_API.md`](docs/V2_API.md)** Slice 3 proposal. **Implementation** gated per **[`docs/V2_CHERRY_PICKS.md`](docs/V2_CHERRY_PICKS.md)** until refactor + API PR.
+3. **Next** — **Slice 3** **`POST /candidates`** **shipped** (API + `e2e-candidates-smoke`); optional **map prefetch** of `/candidates` before `/plan` remains a **web** follow-up.
 
 ### Build & test priority (rolling)
 
@@ -128,7 +128,7 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 | Slice | What | Status |
 |-------|------|--------|
 | **Slice 2** | Mid-journey / **`replanFrom`** | **Implemented** — see **`docs/V2_API.md`**, **`TESTING.md`** |
-| **Slice 3** | **`POST /candidates`** (see **[`docs/designs/slice3-get-candidates.md`](docs/designs/slice3-get-candidates.md)**) | Spike doc + PRD + V2_API proposal **done**; **code** gated until rollout |
+| **Slice 3** | **`POST /candidates`** | **Shipped** — see **[`docs/V2_API.md`](docs/V2_API.md)** § Slice 3; optional UI prefetch TBD |
 
 ---
 

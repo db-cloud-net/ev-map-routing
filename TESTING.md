@@ -185,7 +185,7 @@ node scripts/e2e-plan-functional.mjs
 npm run qa:smoke
 ```
 
-Runs [`scripts/qa-smoke-all.mjs`](../scripts/qa-smoke-all.mjs) (`npm -w api run build`, then `e2e-cors-functional.mjs`, `e2e-plan-log-contract.mjs`, `e2e-replan-smoke.mjs`). See [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md) for suggested CI gating.
+Runs [`scripts/qa-smoke-all.mjs`](../scripts/qa-smoke-all.mjs) (`npm -w api run build`, then `e2e-cors-functional.mjs`, `e2e-plan-log-contract.mjs`, `e2e-replan-smoke.mjs`, `e2e-candidates-smoke.mjs`). See [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md) for suggested CI gating.
 
 These scripts are also listed individually below — they keep critical “plumbing” stable while you add new functionality:
 
@@ -196,7 +196,7 @@ These scripts are also listed individually below — they keep critical “plumb
 - Browser-level smoke check that the UI renders the `Itinerary` panel and shows no CORS/preflight console errors:
   - `node scripts/ui-plan-trip-smoke.mjs`
 
-**Port already in use (`EADDRINUSE`) when E2E spawns the API:** a previous run may have left a `node` process listening on the same `API_PORT`. The scripts [`e2e-cors-functional.mjs`](../scripts/e2e-cors-functional.mjs), [`e2e-plan-log-contract.mjs`](../scripts/e2e-plan-log-contract.mjs), [`e2e-plan-functional.mjs`](../scripts/e2e-plan-functional.mjs) (when `SPAWN_SERVER=true`), and [`e2e-replan-smoke.mjs`](../scripts/e2e-replan-smoke.mjs) call [`e2e-kill-port.mjs`](../scripts/e2e-kill-port.mjs) first to **best-effort kill listeners** on that port. If it still fails, manually end the process (Task Manager / `taskkill`, or `Get-NetTCPConnection -LocalPort <port>` on Windows).
+**Port already in use (`EADDRINUSE`) when E2E spawns the API:** a previous run may have left a `node` process listening on the same `API_PORT`. The scripts [`e2e-cors-functional.mjs`](../scripts/e2e-cors-functional.mjs), [`e2e-plan-log-contract.mjs`](../scripts/e2e-plan-log-contract.mjs), [`e2e-plan-functional.mjs`](../scripts/e2e-plan-functional.mjs) (when `SPAWN_SERVER=true`), [`e2e-replan-smoke.mjs`](../scripts/e2e-replan-smoke.mjs), and [`e2e-candidates-smoke.mjs`](../scripts/e2e-candidates-smoke.mjs) call [`e2e-kill-port.mjs`](../scripts/e2e-kill-port.mjs) first to **best-effort kill listeners** on that port. If it still fails, manually end the process (Task Manager / `taskkill`, or `Get-NetTCPConnection -LocalPort <port>` on Windows).
 
 **`npm run dev:api` / ts-node-dev:** On save, the watcher can start a new process before the old one releases `PORT`. For non-production `DEPLOYMENT_ENV`, the API **best-effort frees** listeners on `PORT` before `listen()` (Windows: `Get-NetTCPConnection -State Listen` plus a `netstat`/`taskkill` fallback; see `API_FREE_PORT_BEFORE_LISTEN` in [`.env.example`](.env.example)). After a kill on **retry** attempts, Windows may need a **short delay** before rebinding (`API_AFTER_FREE_PORT_MS_WIN`; set `API_ALWAYS_SLEEP_AFTER_FREE=true` to delay after every free). If bind still hits `EADDRINUSE`, it **retries** a few times with **backoff** (`API_LISTEN_MAX_ATTEMPTS`) after `close()` — not a tight `listen()` loop (that stacked listeners and triggered `MaxListenersExceededWarning`). If bind still fails, stop duplicate dev servers or change `PORT`.
 

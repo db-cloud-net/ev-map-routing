@@ -1,8 +1,14 @@
 import { geocodeTextToLatLng } from "../services/geocode";
-import type { ItineraryStop, PlanTripResponse } from "../types";
+import type {
+  CandidatesApiResponse,
+  ItineraryStop,
+  PlanTripResponse
+} from "../types";
 import { planTripOneLegFromCoords } from "./planTripOneLeg";
 import { validateLockedChargersByLeg } from "./lockValidation";
 import { resolvePlanStart, type ReplanFromInput } from "./replanResolve";
+import { fetchCorridorChargersForLeg } from "./corridorCandidates";
+import { resolvePlanProviders } from "../sourceRouter";
 
 export type PlanTripPlannerInput = {
   requestId: string;
@@ -19,6 +25,152 @@ export type PlanTripPlannerInput = {
   /** Stops from the previous `POST /plan` — required for `replanFrom.stopId`. */
   previousStops?: ItineraryStop[];
 };
+
+/** `POST /candidates` — same trip inputs as `/plan` without lock fields or `includeCandidates`. */
+export type PlanTripCandidatesOnlyInput = Omit<
+  PlanTripPlannerInput,
+  "lockedChargersByLeg" | "lockedHotelId" | "includeCandidates"
+>;
+
+function makeCandidatesLogEvent(requestId: string) {
+  const enable = (process.env.PLAN_LOG_REQUESTS ?? "true").toLowerCase() === "true";
+  const deploymentEnv = (process.env.DEPLOYMENT_ENV ?? "dev-local").trim().toLowerCase();
+  return (event: string, data: Record<string, unknown> = {}) => {
+    if (!enable) return;
+    console.log(JSON.stringify({ event, deploymentEnv, requestId, ...data }));
+  };
+}
+
+/**
+ * Corridor charger + hotel candidates only (Slice 3). Same geographic inputs as
+ * `POST /plan` without running the least-time itinerary solver.
+ */
+export async function planTripCandidatesOnly(
+  input: PlanTripCandidatesOnlyInput
+): Promise<CandidatesApiResponse> {
+  const responseVersion = input.responseVersion || "v2-1";
+  const maxWaypoints = Number(process.env.V2_MAX_WAYPOINTS ?? "8");
+  const wps = (input.waypoints ?? []).map((w) => w.trim()).filter(Boolean);
+
+  if (wps.length > maxWaypoints) {
+    return {
+      requestId: input.requestId,
+      responseVersion,
+      status: "error",
+      message: `Too many waypoints (max ${maxWaypoints}).`
+    };
+  }
+
+  const resolved = await resolvePlanStart({
+    requestId: input.requestId,
+    responseVersion,
+    start: input.start,
+    replanFrom: input.replanFrom,
+    previousStops: input.previousStops
+  });
+  if (!resolved.ok) {
+    const r = resolved.response;
+    return {
+      requestId: r.requestId,
+      responseVersion: r.responseVersion || responseVersion,
+      status: "error",
+      message: r.message,
+      errorCode: r.errorCode,
+      debug: r.debug
+    };
+  }
+
+  const { startCoords } = resolved;
+  const logEvent = makeCandidatesLogEvent(input.requestId);
+  const providers = resolvePlanProviders({ requestId: input.requestId });
+  const overnightHotelRadiusMeters = Number(
+    process.env.OVERNIGHT_HOTEL_RADIUS_METERS ??
+      String(Number(process.env.HOTEL_RADIUS_METERS ?? "365.76"))
+  );
+
+  if (!wps.length) {
+    const endCoords = await geocodeTextToLatLng(input.end);
+    const corridor = await fetchCorridorChargersForLeg({
+      requestId: input.requestId,
+      legIndex: 0,
+      startCoords,
+      endCoords,
+      includeCandidates: true,
+      chargersProvider: providers.chargers,
+      poisProvider: providers.pois,
+      logEvent,
+      overnightHotelRadiusMeters
+    });
+    if (!corridor.ok) {
+      return {
+        requestId: input.requestId,
+        responseVersion,
+        status: "error",
+        message: corridor.message,
+        debug: corridor.debug
+      };
+    }
+    return {
+      requestId: input.requestId,
+      responseVersion,
+      status: "ok",
+      candidates: corridor.candidatesForResponse,
+      debug: { corridor: corridor.debug }
+    };
+  }
+
+  const wpCoords = await Promise.all(wps.map((w) => geocodeTextToLatLng(w)));
+  const endCoords = await geocodeTextToLatLng(input.end);
+
+  const points = [startCoords, ...wpCoords, endCoords];
+
+  const allChargers: NonNullable<PlanTripResponse["candidates"]>["chargers"] = [];
+  const allHotels: NonNullable<PlanTripResponse["candidates"]>["hotels"] = [];
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const corridor = await fetchCorridorChargersForLeg({
+      requestId: input.requestId,
+      legIndex: i,
+      startCoords: points[i],
+      endCoords: points[i + 1],
+      includeCandidates: true,
+      chargersProvider: providers.chargers,
+      poisProvider: providers.pois,
+      logEvent,
+      overnightHotelRadiusMeters
+    });
+    if (!corridor.ok) {
+      return {
+        requestId: input.requestId,
+        responseVersion,
+        status: "error",
+        message: corridor.message,
+        debug: corridor.debug
+      };
+    }
+    if (corridor.candidatesForResponse) {
+      allChargers.push(...corridor.candidatesForResponse.chargers);
+      allHotels.push(...corridor.candidatesForResponse.hotels);
+    }
+  }
+
+  const candidates =
+    allChargers.length || allHotels.length
+      ? {
+          chargers: dedupeById(allChargers),
+          hotels: dedupeById(allHotels),
+          legIndex: 0
+        }
+      : undefined;
+
+  return {
+    requestId: input.requestId,
+    responseVersion,
+    status: "ok",
+    candidates,
+    debug: { multiLeg: true, legCount: points.length - 1 }
+  };
+}
 
 function dedupeById<T extends { id: string }>(rows: T[]): T[] {
   const seen = new Set<string>();

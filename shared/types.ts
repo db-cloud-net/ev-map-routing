@@ -101,3 +101,11 @@ export type PlanTripResponse = {
   candidates?: PlanTripCandidates;
 };
 
+/** Response shape for `POST /candidates` (Slice 3) — candidates only, no itinerary. */
+export type CandidatesApiResponse = Pick<
+  PlanTripResponse,
+  "requestId" | "responseVersion" | "status" | "message" | "errorCode" | "candidates"
+> & {
+  debug?: Record<string, unknown>;
+};
+

@@ -3,7 +3,7 @@ import http from "http";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { execSync } from "child_process";
-import { planTrip } from "./planner/planTrip";
+import { planTrip, planTripCandidatesOnly } from "./planner/planTrip";
 import { withTimeout } from "./planTimeout";
 import { ProviderCallMetrics, runPlanWithProviderMetrics } from "./services/providerCallMetrics";
 import path from "path";
@@ -133,6 +133,136 @@ const planSchema = z
       });
     }
   });
+
+const candidatesSchema = z
+  .object({
+    start: z.string().max(200).optional(),
+    end: z.string().min(1).max(200),
+    waypoints: z.array(z.string().min(1).max(200)).max(24).optional(),
+    replanFrom: replanFromSchema.optional(),
+    previousStops: z.array(itineraryStopSchema).max(200).optional()
+  })
+  .superRefine((data, ctx) => {
+    const hasStart = (data.start ?? "").trim().length > 0;
+    const hasReplan = data.replanFrom != null;
+    if (!hasStart && !hasReplan) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Exactly one of start (non-empty) or replanFrom is required.",
+        path: ["start"]
+      });
+    }
+    if (hasStart && hasReplan) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Cannot send both start and replanFrom.",
+        path: ["replanFrom"]
+      });
+    }
+    if (data.replanFrom && "stopId" in data.replanFrom && !data.previousStops?.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "previousStops is required when replanFrom.stopId is set.",
+        path: ["previousStops"]
+      });
+    }
+  });
+
+app.post("/candidates", async (req, res) => {
+  const requestId =
+    (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
+  const startedAt = Date.now();
+  const responseVersion = "v2-1-candidates";
+  let providerMetrics: ProviderCallMetrics | undefined;
+
+  try {
+    const parsed = candidatesSchema.parse(req.body);
+    const replanLog =
+      parsed.replanFrom == null
+        ? null
+        : "coords" in parsed.replanFrom
+          ? { mode: "coords" as const }
+          : { mode: "stopId" as const, stopId: parsed.replanFrom.stopId };
+    console.log(
+      JSON.stringify({
+        event: "candidates_request_start",
+        deploymentEnv,
+        requestId,
+        responseVersion,
+        startTextPresent: Boolean(parsed.start?.trim()),
+        end: parsed.end,
+        waypointsCount: parsed.waypoints?.length ?? 0,
+        replanFrom: replanLog,
+        previousStopsCount: parsed.previousStops?.length ?? 0
+      })
+    );
+    const totalMs = Number(process.env.PLAN_TOTAL_TIMEOUT_MS ?? 120000);
+    providerMetrics = new ProviderCallMetrics();
+    const result = await runPlanWithProviderMetrics(providerMetrics, () =>
+      withTimeout(
+        planTripCandidatesOnly({
+          requestId,
+          responseVersion,
+          start: parsed.start?.trim() ? parsed.start : undefined,
+          end: parsed.end,
+          waypoints: parsed.waypoints,
+          replanFrom: parsed.replanFrom,
+          previousStops: parsed.previousStops
+        }),
+        totalMs,
+        `Candidates request exceeded time limit (${totalMs}ms). Try a shorter corridor or retry later.`
+      )
+    );
+    console.log(
+      JSON.stringify({
+        event: "candidates_request_end",
+        deploymentEnv,
+        requestId,
+        responseVersion,
+        status: result.status,
+        durationMs: Date.now() - startedAt,
+        chargerCandidates: result.candidates?.chargers?.length ?? 0,
+        hotelCandidates: result.candidates?.hotels?.length ?? 0
+      })
+    );
+    res.status(result.status === "ok" ? 200 : 400).json({
+      ...result,
+      debug: {
+        ...(result.debug ?? {}),
+        ...providerMetrics.toDebugPayload()
+      }
+    });
+  } catch (err) {
+    const isTimeout =
+      err instanceof Error &&
+      /exceeded time limit|timed out|ECONNABORTED/i.test(err.message);
+    console.log(
+      JSON.stringify({
+        event: "candidates_request_error",
+        deploymentEnv,
+        requestId,
+        responseVersion,
+        durationMs: Date.now() - startedAt,
+        message: err instanceof Error ? err.message : String(err),
+        timeout: isTimeout
+      })
+    );
+    const msg =
+      err instanceof Error ? err.message : "Unexpected error fetching candidates";
+    const statusCode = isTimeout ? 408 : 400;
+    const errorDebug = {
+      ...(isTimeout ? { reason: "planner_timeout" } : {}),
+      ...(providerMetrics?.toDebugPayload() ?? {})
+    };
+    res.status(statusCode).json({
+      requestId,
+      responseVersion,
+      status: "error",
+      message: msg,
+      debug: Object.keys(errorDebug).length > 0 ? errorDebug : undefined
+    });
+  }
+});
 
 app.post("/plan", async (req, res) => {
   const requestId =
