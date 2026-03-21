@@ -4,6 +4,7 @@ Baseline v2 ships **waypoints + along-route candidates** embedded in `POST /plan
 
 | Feature | Gate |
 |---------|------|
+| **Slice 3 — `POST /candidates`** | **Spike:** [docs/designs/slice3-get-candidates.md](designs/slice3-get-candidates.md) + **PRD** § Slice 3 — **implementation** still behind shared corridor refactor + API PR (see doc §6 rollout) |
 | Saved trips / accounts | New doc under `docs/designs/` + API sketch |
 | Shareable plan links | Same + privacy review |
 | Public API versioning / rate limits | `docs/V2_API.md` + ops runbook |

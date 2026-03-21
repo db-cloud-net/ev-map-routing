@@ -250,6 +250,14 @@ Repo hygiene requirement (before running `/qa`):
 
 **Implementation:** **`replanFrom`** + **`previousStops`** (for `stopId`) — see **[docs/V2_API.md](docs/V2_API.md)** and **`TESTING.md`**.
 
+### Slice 3 — dedicated candidates fetch (spike)
+
+**Goal:** Allow the client to request **charger + hotel candidate pins** (same **id universe** as planning and locks) **without** running a full **`POST /plan`** solve — enabling **parallel** or **earlier** map layers on the way to the **~60s first screen** ([docs/ROUTING_UX_SPEC.md](docs/ROUTING_UX_SPEC.md) §3).
+
+**Direction:** **`POST /candidates`** with a body aligned to **`PlanTripRequest`** (minus lock fields); response carries **`candidates`** only (no `stops` / `legs`). **Normative contract** will live in **[docs/V2_API.md](docs/V2_API.md)** once implemented.
+
+**Design spike:** **[docs/designs/slice3-get-candidates.md](docs/designs/slice3-get-candidates.md)** — refactor notes, open questions (per-leg vs merged candidates, caching, rate limits), phased rollout.
+
 ### V2 non-goals (baseline)
 1. Deterministic routes across replans (still non-goal).
 
