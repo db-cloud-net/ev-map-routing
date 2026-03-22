@@ -12,17 +12,47 @@ import { existsSync } from "fs";
 
 import dotenv from "dotenv";
 
-// Load the repo-root `.env`.
-// In dev we usually run from the workspace root, but when running compiled JS
-// from `api/dist/...` the `__dirname` depth changes, so we prefer `process.cwd()`.
-const cwdEnvPath = path.join(process.cwd(), ".env");
-const fallbackRepoRoot = path.resolve(__dirname, "../..");
-const fallbackEnvPath = path.join(fallbackRepoRoot, ".env");
+/**
+ * Find repo-root `.env` whether you start from workspace root (`npm -w api run start`),
+ * from `api/`, or run compiled `node dist/api/src/server.js` (deep `__dirname`).
+ * A shallow `../..` from dist is **not** the repo root — that missed `.env` and caused empty `NREL_API_KEY`.
+ */
+function findEnvFilePath(): string | undefined {
+  const candidates: string[] = [];
+  const push = (p: string) => {
+    const n = path.normalize(path.resolve(p));
+    if (!candidates.includes(n)) candidates.push(n);
+  };
 
-const envPath = existsSync(cwdEnvPath) ? cwdEnvPath : fallbackEnvPath;
-dotenv.config({ path: envPath });
+  push(path.join(process.cwd(), ".env"));
+  push(path.join(process.cwd(), "..", ".env"));
+
+  let dir = __dirname;
+  for (let i = 0; i < 12; i++) {
+    push(path.join(dir, ".env"));
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return undefined;
+}
+
+const envPath = findEnvFilePath();
+if (envPath) {
+  // Prefer values from the file when the shell has stale/empty vars (e.g. NREL_API_KEY="").
+  dotenv.config({ path: envPath, override: true });
+} else {
+  dotenv.config();
+}
 
 const deploymentEnv = (process.env.DEPLOYMENT_ENV ?? "dev-local").trim().toLowerCase();
+if (envPath && deploymentEnv !== "production" && deploymentEnv !== "prod") {
+  console.log(`[env] loaded ${envPath}`);
+}
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));

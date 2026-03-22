@@ -14,7 +14,7 @@
 
 1. ~~**Commit / push**~~ — **`main`** pushed to origin (2026-03-21); dev API **ts-node-dev** listen stability in **`c07bf96`**.
 2. ~~**Manual verify**~~ — **Done** — see **Manual QA** above.
-3. **Next** — **Slice 3** **`POST /candidates`** **shipped**; **Slice 4 Phase 1** **`POST /route-preview`** **shipped** (Valhalla preview + horizon clip + E2E; **no map UI**). **Product / UX focus:** **[`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md)** — **§3** refinements + **§5** safety on map; **design:** **[`docs/designs/slice4-progressive-first-screen.md`](docs/designs/slice4-progressive-first-screen.md)** Phase **2**. **§2** mirror + **fail closed** for **`/plan`**. **Platform (parallel):** **[`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md)**.
+3. **Next** — **Slice 3** **`POST /candidates`** **shipped**; **Slice 4** **`POST /route-preview`** **+ map preview** **shipped** (Phase 1 API + Phase 2 map). **Phase 3 (partial):** honest **Plan** button states + **§5** “beyond the horizon” copy in **`web/src/app/map/page.tsx`** — **remaining:** refinements loop + §5 prefetch/gating for next horizon. **Product / UX:** **[`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md)** **§3** + **§5**; **design:** **[`docs/designs/slice4-progressive-first-screen.md`](docs/designs/slice4-progressive-first-screen.md)** Phase **3**. **§2** mirror + **fail closed** for **`/plan`**. **Platform (parallel):** **[`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md)**.
 
 ### Build & test priority (rolling)
 

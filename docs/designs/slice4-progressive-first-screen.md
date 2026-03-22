@@ -1,6 +1,6 @@
 # Slice 4 — progressive ~60s first screen (design)
 
-**Status:** **Partially implemented** — **Phase 1** `POST /route-preview` (single leg) + **`e2e-route-preview-smoke.mjs`**; map UI and refinement loop **not** shipped. Normative product text remains **[ROUTING_UX_SPEC.md](../ROUTING_UX_SPEC.md)** §3–§5.  
+**Status:** **Partially implemented** — **Phase 1** `POST /route-preview` + smoke; **Phase 2** map preview (teal line, merged multi-waypoint); **Phase 3** partial (honest Plan button states + §5 “beyond the horizon” copy). **Refinement loop** + **§5 prefetch/gating** still open. Normative product text remains **[ROUTING_UX_SPEC.md](../ROUTING_UX_SPEC.md)** §3–§5.  
 **Normative product decisions** stay in **ROUTING_UX_SPEC**; this doc is **proposed** API + client shape until reviewed.
 
 **Depends on:** **[Slice 3](./slice3-get-candidates.md)** (`POST /candidates` + optional map prefetch) — **shipped**.  
@@ -112,9 +112,9 @@ For Slice 4:
 |-------|-------------|
 | **0** | This doc + pointer in **V2_API.md** / **README** (done when merged). |
 | **1** | **Done (API)** — **`POST /route-preview`** (`api/src/planner/routePreview.ts`, **`v2-1-route-preview`**) + horizon clip + **`scripts/e2e-route-preview-smoke.mjs`** in **`npm run qa:smoke`**. **No map UI yet.** |
-| **2** | Map: show preview line + horizon TBT; **`POST /plan`** still authoritative for stops/charging. |
-| **3** | Refinements loop + honest states; §5 prefetch / gating. |
-| **4** | Multi-waypoint + reorder interaction with spec §4. |
+| **2** | **Done** — Map (`web/src/app/map/page.tsx`): **`POST /route-preview`** in parallel with **`/plan`** (single segment); teal dashed line + horizon TBT panel; cleared on successful plan. Env: **`NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW`**. |
+| **3** | **Partial** — Map: staged **Plan** button labels (`Road preview…` / `Planning trip…`) + loading hint; sidebar **§5** copy (“beyond the horizon”) on preview + post-plan Road directions. **Remaining:** refinements loop + true prefetch/gating for next horizon chunk. |
+| **4** | Multi-waypoint + reorder interaction with spec §4. *(Multi-waypoint preview merge is already shipped; §4 reorder UX still open.)* |
 
 ---
 

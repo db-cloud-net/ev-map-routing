@@ -7,8 +7,21 @@ import type {
   CandidatesApiResponse,
   ItineraryStop,
   PlanTripCandidates,
-  PlanTripResponse
+  PlanTripResponse,
+  RoutePreviewApiResponse
 } from "../../../../shared/types";
+import { fetchMergedRoutePreview, routePreviewSegmentChain } from "../../lib/mergeRoutePreview";
+
+/** Abort merged `/route-preview` fetches so `routePreviewPending` cannot stick forever (no blue line / chord). */
+function abortSignalAfterMs(ms: number): AbortSignal | undefined {
+  if (!Number.isFinite(ms) || ms <= 0) return undefined;
+  if (typeof AbortSignal !== "undefined" && "timeout" in AbortSignal && typeof AbortSignal.timeout === "function") {
+    return AbortSignal.timeout(ms);
+  }
+  const c = new AbortController();
+  setTimeout(() => c.abort(), ms);
+  return c.signal;
+}
 
 export default function MapPage() {
   const mapEl = useRef<HTMLDivElement | null>(null);
@@ -24,10 +37,16 @@ export default function MapPage() {
     markersRef.current = [];
     for (const m of candidateMarkersRef.current) m.remove();
     candidateMarkersRef.current = [];
-    for (const lid of ["route-line", "route-line-halo"]) {
+    for (const lid of [
+      "route-line",
+      "route-line-halo",
+      "route-preview-line",
+      "route-preview-line-halo"
+    ]) {
       if (map.getLayer(lid)) map.removeLayer(lid);
     }
     if (map.getSource("route-geojson")) map.removeSource("route-geojson");
+    if (map.getSource("route-preview-geojson")) map.removeSource("route-preview-geojson");
   }
 
   const [start, setStart] = useState("Raleigh, NC");
@@ -42,6 +61,11 @@ export default function MapPage() {
   /** Slice 3: pins from `POST /candidates` before `/plan` completes (same id universe). */
   const [candidatePreview, setCandidatePreview] = useState<PlanTripCandidates | null>(null);
   const candidatesRequestGenRef = useRef(0);
+  /** Slice 4: fast road line + horizon TBT from `POST /route-preview` (one call per hop; merged when waypoints). */
+  const [routePreview, setRoutePreview] = useState<RoutePreviewApiResponse | null>(null);
+  /** True while a single-leg `POST /route-preview` is in flight — suppress misleading chord lines until it settles. */
+  const [routePreviewPending, setRoutePreviewPending] = useState(false);
+  const routePreviewRequestGenRef = useRef(0);
   /** Per-leg ordered charger locks (Slice 1 UI: single-leg trips only; multi-leg rows stay empty). */
   const [lockedChargersByLeg, setLockedChargersByLeg] = useState<string[][]>([[]]);
   const [lockedHotelId, setLockedHotelId] = useState<string | null>(null);
@@ -61,6 +85,34 @@ export default function MapPage() {
   );
   const legCount = Math.max(1, parsedWaypoints.length + 1);
   const singleLegTrip = parsedWaypoints.length === 0;
+
+  /** Slice 4 Phase 3: honest “what’s running” vs a flat “Planning…” (ROUTING_UX_SPEC §7). */
+  const planningButtonLabel = useMemo(() => {
+    if (!loading) return "Plan Trip";
+    if (routePreviewPending) return "Road preview…";
+    return "Planning trip…";
+  }, [loading, routePreviewPending]);
+
+  const planningLoadingHelp = useMemo(() => {
+    if (!loading) return null;
+    if (routePreviewPending) {
+      return "Fetching Valhalla road preview (runs in parallel with the EV planner).";
+    }
+    return "EV least-time planner running (chargers, stops, times).";
+  }, [loading, routePreviewPending]);
+
+  /** Latest single-leg lock row + hotel for backup when entering multi-waypoint mode. */
+  const locksSnapshotRef = useRef<{ chargers: string[]; hotel: string | null }>({
+    chargers: [],
+    hotel: null
+  });
+  locksSnapshotRef.current = {
+    chargers: lockedChargersByLeg[0] ?? [],
+    hotel: lockedHotelId
+  };
+  /** Restored when waypoints are cleared back to a single driving segment. */
+  const singleLegLocksBackupRef = useRef<{ chargers: string[]; hotel: string | null } | null>(null);
+  const prevWaypointCountRef = useRef(parsedWaypoints.length);
 
   // `NEXT_PUBLIC_API_BASE` is optional; default to current host for WSL/Windows cross-host dev.
   const apiBase = useMemo(
@@ -93,15 +145,54 @@ export default function MapPage() {
     mapRef.current = map;
   }, []);
 
+  /**
+   * Locks are only clickable for a single driving segment (no waypoints).
+   * When the user adds waypoints we stash prior single-leg locks and clear rows; when they clear
+   * waypoints we restore the stash so they don't have to re-lock from scratch.
+   */
   useEffect(() => {
-    setLockedChargersByLeg((prev) =>
-      Array.from({ length: legCount }, (_, i) => prev[i] ?? [])
-    );
-  }, [legCount]);
+    const n = parsedWaypoints.length;
+    const prev = prevWaypointCountRef.current;
+    prevWaypointCountRef.current = n;
+
+    if (prev === n) return;
+
+    if (prev === 0 && n > 0) {
+      const snap = locksSnapshotRef.current;
+      if (snap.chargers.length || snap.hotel) {
+        singleLegLocksBackupRef.current = {
+          chargers: [...snap.chargers],
+          hotel: snap.hotel
+        };
+      } else {
+        singleLegLocksBackupRef.current = null;
+      }
+      setLockedChargersByLeg(Array.from({ length: n + 1 }, () => []));
+      setLockedHotelId(null);
+    } else if (prev > 0 && n === 0) {
+      const b = singleLegLocksBackupRef.current;
+      singleLegLocksBackupRef.current = null;
+      if (b) {
+        setLockedChargersByLeg([b.chargers]);
+        setLockedHotelId(b.hotel);
+      } else {
+        setLockedChargersByLeg([[]]);
+      }
+    } else if (n > 0 && prev > 0) {
+      setLockedChargersByLeg(Array.from({ length: n + 1 }, () => []));
+      setLockedHotelId(null);
+    }
+  }, [parsedWaypoints.length]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+
+    // Clear Slice 4 preview layers whenever this effect runs (plan or no plan).
+    for (const lid of ["route-preview-line", "route-preview-line-halo"]) {
+      if (map.getLayer(lid)) map.removeLayer(lid);
+    }
+    if (map.getSource("route-preview-geojson")) map.removeSource("route-preview-geojson");
 
     // Clear previous visualization layers.
     const layersToRemove = ["route-line", "route-line-halo"];
@@ -157,7 +248,19 @@ export default function MapPage() {
     map.resize();
 
     // Route geometry.
-    // MVP: expects the backend to return at least one leg geometry; if absent, draw straight segments between stops.
+    // For normal trips (replan off) prefer merged `POST /route-preview` polylines over any per-leg geometry —
+    // solver legs may carry straight chord LineStrings that would incorrectly win here.
+    const previewPoly =
+      routePreview?.status === "ok" && routePreview.preview?.polyline?.coordinates?.length
+        ? routePreview.preview.polyline
+        : null;
+    const preferPreviewPolyline =
+      replanMode === "off" && previewPoly && previewPoly.coordinates.length >= 2;
+
+    /** Plan may return before route-preview; avoid a flash of straight chords while preview is loading. */
+    const suppressChordUntilPreview =
+      replanMode === "off" && routePreviewPending && !previewPoly;
+
     const linePoints: Array<[number, number]> = [];
     for (const leg of plan.legs) {
       if (leg.geometry?.type === "LineString" && Array.isArray(leg.geometry.coordinates)) {
@@ -167,7 +270,21 @@ export default function MapPage() {
       }
     }
 
-    if (linePoints.length >= 2) {
+    let routeCoords: Array<[number, number]> = [];
+    if (preferPreviewPolyline && previewPoly) {
+      routeCoords = previewPoly.coordinates as Array<[number, number]>;
+    } else if (suppressChordUntilPreview) {
+      routeCoords = [];
+    } else if (linePoints.length >= 2) {
+      routeCoords = linePoints;
+    } else if (previewPoly && previewPoly.coordinates.length >= 2) {
+      routeCoords = previewPoly.coordinates as Array<[number, number]>;
+    } else {
+      const chord = plan.stops.map((s) => [s.coords.lon, s.coords.lat] as [number, number]);
+      if (chord.length >= 2) routeCoords = chord;
+    }
+
+    if (routeCoords.length >= 2) {
       map.addSource("route-geojson", {
         type: "geojson",
         data: {
@@ -175,7 +292,7 @@ export default function MapPage() {
           properties: {},
           geometry: {
             type: "LineString",
-            coordinates: linePoints
+            coordinates: routeCoords
           }
         }
       });
@@ -194,26 +311,6 @@ export default function MapPage() {
         layout: { "line-join": "round", "line-cap": "round" },
         paint: { "line-color": "#0b7cff", "line-width": 5 }
       });
-    } else {
-      // Fallback: connect stops in order.
-      const coords = plan.stops.map((s) => [s.coords.lon, s.coords.lat] as [number, number]);
-      if (coords.length >= 2) {
-        map.addSource("route-geojson", {
-          type: "geojson",
-          data: {
-            type: "Feature",
-            properties: {},
-            geometry: { type: "LineString", coordinates: coords }
-          }
-        });
-        map.addLayer({
-          id: "route-line",
-          type: "line",
-          source: "route-geojson",
-          layout: { "line-join": "round", "line-cap": "round" },
-          paint: { "line-color": "#0b7cff", "line-width": 5 }
-        });
-      }
     }
 
     // Candidate markers are handled in a separate effect (layers + toggles).
@@ -235,7 +332,76 @@ export default function MapPage() {
         .addTo(map);
       markersRef.current.push(marker);
     }
-  }, [plan]);
+  }, [plan, routePreview, singleLegTrip, replanMode, routePreviewPending]);
+
+  /** Slice 4: draw approximate road line from `POST /route-preview` until a successful plan replaces it. */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    for (const lid of ["route-preview-line", "route-preview-line-halo"]) {
+      if (map.getLayer(lid)) map.removeLayer(lid);
+    }
+    if (map.getSource("route-preview-geojson")) map.removeSource("route-preview-geojson");
+
+    if (plan?.status === "ok") return;
+
+    const poly = routePreview?.preview?.polyline;
+    if (!poly?.coordinates?.length || poly.coordinates.length < 2) return;
+
+    map.addSource("route-preview-geojson", {
+      type: "geojson",
+      data: {
+        type: "Feature",
+        properties: {},
+        geometry: poly
+      }
+    });
+    map.addLayer({
+      id: "route-preview-line-halo",
+      type: "line",
+      source: "route-preview-geojson",
+      layout: { "line-join": "round", "line-cap": "round" },
+      paint: { "line-color": "#000000", "line-width": 8, "line-opacity": 0.15 }
+    });
+    map.addLayer({
+      id: "route-preview-line",
+      type: "line",
+      source: "route-preview-geojson",
+      layout: { "line-join": "round", "line-cap": "round" },
+      paint: {
+        "line-color": "#0d9488",
+        "line-width": 4,
+        "line-dasharray": [2, 2]
+      }
+    });
+
+    const coords = poly.coordinates;
+    let minLon = 180;
+    let maxLon = -180;
+    let minLat = 90;
+    let maxLat = -90;
+    for (const c of coords) {
+      const lon = c[0];
+      const lat = c[1];
+      minLon = Math.min(minLon, lon);
+      maxLon = Math.max(maxLon, lon);
+      minLat = Math.min(minLat, lat);
+      maxLat = Math.max(maxLat, lat);
+    }
+    const spanLon = maxLon - minLon;
+    const spanLat = maxLat - minLat;
+    if (Number.isFinite(spanLon) && Number.isFinite(spanLat) && spanLon > 0 && spanLat > 0) {
+      map.fitBounds(
+        [
+          [minLon, minLat],
+          [maxLon, maxLat]
+        ],
+        { padding: 40, duration: 0 }
+      );
+    }
+    map.resize();
+  }, [plan, routePreview]);
 
   const candidatesForMap: PlanTripCandidates | null =
     plan?.status === "ok" && plan.candidates ? plan.candidates : candidatePreview;
@@ -303,10 +469,17 @@ export default function MapPage() {
     lockedHotelId
   ]);
 
+  function humanizePlannerMessage(msg: string): string {
+    if (/Valhalla fetch failed|Valhalla route|\/route\b/i.test(msg)) {
+      return `${msg} — Start Valhalla locally or set VALHALLA_BASE_URL in the API .env (e.g. http://localhost:8002).`;
+    }
+    return msg;
+  }
+
   function classifyPlanError(e: unknown, resp: Response | null): string {
     if (e instanceof DOMException && e.name === "AbortError") {
       const ms = Number(process.env.NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS ?? 130000);
-      return `Request timed out after ${Math.round(ms / 1000)}s. Try a shorter route or retry.`;
+      return `Planner request timed out after ${Math.round(ms / 1000)}s (NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS). Long multi-stop trips often need a higher limit and PLAN_TOTAL_TIMEOUT_MS on the API — see TESTING.md.`;
     }
     if (e instanceof TypeError && /fetch|Load failed|NetworkError/i.test(String(e.message))) {
       return "Network error: could not reach the planner API. Check that the API is running and CORS allows this origin.";
@@ -315,9 +488,11 @@ export default function MapPage() {
       return "The planner took too long (server time limit). Try a shorter route or retry later.";
     }
     if (resp?.status === 400 || resp?.status === 500 || resp?.status === 502) {
-      return e instanceof Error ? e.message : "Planning failed";
+      const raw = e instanceof Error ? e.message : "Planning failed";
+      return humanizePlannerMessage(raw);
     }
-    return e instanceof Error ? e.message : "Planning failed";
+    const raw = e instanceof Error ? e.message : "Planning failed";
+    return humanizePlannerMessage(raw);
   }
 
   async function onPlanTrip() {
@@ -325,6 +500,7 @@ export default function MapPage() {
     setLoading(true);
     setError(null);
     setCandidatePreview(null);
+    setRoutePreview(null);
     /** Slice 2 `replanFrom.stopId` needs stops from the prior plan — capture before clearing UI state. */
     const priorPlanForReplan = plan;
     setPlan(null);
@@ -334,7 +510,11 @@ export default function MapPage() {
     let resp: Response | null = null;
     const prefetchCandidates =
       (process.env.NEXT_PUBLIC_PREFETCH_CANDIDATES ?? "true").toLowerCase() !== "false";
+    const prefetchRoutePreview =
+      (process.env.NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW ?? "true").toLowerCase() !== "false";
     const candidatesGen = ++candidatesRequestGenRef.current;
+    const routePreviewGen = ++routePreviewRequestGenRef.current;
+    let pendingFailsafeTimer: number | undefined;
     try {
       const apiUrl = `${apiBase.replace(/\/$/, "")}/plan`;
       const candidatesUrl = `${apiBase.replace(/\/$/, "")}/candidates`;
@@ -383,8 +563,7 @@ export default function MapPage() {
         void fetch(candidatesUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(candidatesBody),
-          signal: controller.signal
+          body: JSON.stringify(candidatesBody)
         })
           .then(async (r) => {
             if (candidatesGen !== candidatesRequestGenRef.current) return;
@@ -398,6 +577,43 @@ export default function MapPage() {
           });
       }
 
+      const previewChain =
+        replanMode === "off" ? routePreviewSegmentChain(start, wps, end) : [];
+      const shouldPrefetchPreview =
+        prefetchRoutePreview && replanMode === "off" && previewChain.length >= 2;
+      setRoutePreviewPending(shouldPrefetchPreview);
+
+      const routePreviewTimeoutMs = Number(
+        process.env.NEXT_PUBLIC_ROUTE_PREVIEW_CLIENT_TIMEOUT_MS ?? 180000
+      );
+      const routePreviewAbort = abortSignalAfterMs(routePreviewTimeoutMs);
+
+      /** Run in parallel with /plan; single-leg = one request, waypoints = one request per hop (merged). */
+      const routePreviewPromise: Promise<RoutePreviewApiResponse | null> =
+        shouldPrefetchPreview
+          ? fetchMergedRoutePreview(apiBase, previewChain, routePreviewAbort)
+          : Promise.resolve(null);
+
+      /** Failsafe: if fetches hang without rejecting, still clear pending so the map can draw chord/leg geometry. */
+      pendingFailsafeTimer = window.setTimeout(() => {
+        if (routePreviewGen !== routePreviewRequestGenRef.current) return;
+        setRoutePreviewPending(false);
+      }, routePreviewTimeoutMs + 5000);
+
+      void routePreviewPromise
+        .then((previewJson) => {
+          if (routePreviewGen !== routePreviewRequestGenRef.current) return;
+          if (previewJson) setRoutePreview(previewJson);
+        })
+        .catch(() => {
+          /* ignore */
+        })
+        .finally(() => {
+          window.clearTimeout(pendingFailsafeTimer);
+          if (routePreviewGen !== routePreviewRequestGenRef.current) return;
+          setRoutePreviewPending(false);
+        });
+
       resp = await fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -410,6 +626,7 @@ export default function MapPage() {
       } catch {
         throw new Error(`Invalid response from planner (HTTP ${resp.status}).`);
       }
+
       if (!resp.ok) {
         setPlan(json);
         throw new Error(json.message ?? `Planning failed (HTTP ${resp.status})`);
@@ -419,8 +636,10 @@ export default function MapPage() {
         setCandidatePreview(null);
       }
     } catch (e) {
+      setRoutePreviewPending(false);
       setError(classifyPlanError(e, resp));
     } finally {
+      if (pendingFailsafeTimer !== undefined) window.clearTimeout(pendingFailsafeTimer);
       window.clearTimeout(timer);
       setLoading(false);
     }
@@ -442,7 +661,9 @@ export default function MapPage() {
         <p style={{ margin: "6px 0 0 0", fontSize: 12, color: "#555" }}>
           Along-route charger + hotel candidates appear as green / coral markers (Slice 3: requested early via{" "}
           <code>POST /candidates</code> in parallel with <code>/plan</code> unless{" "}
-          <code>NEXT_PUBLIC_PREFETCH_CANDIDATES=false</code>). Itinerary stops use blue / purple / orange / green.
+          <code>NEXT_PUBLIC_PREFETCH_CANDIDATES=false</code>). <strong>Slice 4:</strong> normal trips (start + optional
+          waypoints + end) fetch <code>POST /route-preview</code> per hop and merge (teal dashed line + horizon turn list) unless{" "}
+          <code>NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW=false</code>. Itinerary stops use blue / purple / orange / green.
         </p>
         <p style={{ margin: "8px 0 0 0", fontSize: 12, color: "#555" }}>
           <strong>Locks (single segment only):</strong> click a green charger to require it on the route; click
@@ -587,7 +808,8 @@ export default function MapPage() {
             </div>
           ) : (
             <div style={{ fontSize: 12, color: "#888" }}>
-              Add locks after clearing waypoints (single driving segment only in this UI).
+              Charger/hotel locks are disabled while waypoints are set. Clear the waypoints box to lock
+              chargers again; your previous single-segment locks are restored automatically.
             </div>
           )}
         </div>
@@ -595,6 +817,62 @@ export default function MapPage() {
         {error ? (
           <div style={{ marginTop: 12, color: "crimson" }}>
             {error}
+          </div>
+        ) : null}
+
+        {routePreview?.status === "ok" && routePreview.preview && plan?.status !== "ok" ? (
+          <div
+            style={{
+              marginTop: 16,
+              padding: 12,
+              background: "#f0fdfa",
+              border: "1px solid #99f6e4",
+              borderRadius: 6
+            }}
+          >
+            <h2 style={{ margin: "0 0 8px 0", fontSize: 15 }}>Approximate road route (preview)</h2>
+            <p style={{ margin: "0 0 8px 0", fontSize: 12, color: "#444" }}>
+              Valhalla driving line (teal dashed on map) and turn-by-turn
+              {parsedWaypoints.length === 0 ? (
+                <>
+                  {" "}
+                  (first ~{routePreview.preview.horizon.maxMinutes} min of driving)
+                </>
+              ) : (
+                <> for each segment — same list after planning finishes</>
+              )}
+              . No EV charging or stops yet; the full itinerary appears when planning finishes.
+            </p>
+            <p style={{ margin: "0 0 8px 0", fontSize: 11, color: "#666" }}>
+              <strong>Beyond the horizon:</strong> this list only covers the first ~
+              {routePreview.preview.horizon.maxMinutes} min per segment. The rest of each leg is not shown as
+              step-by-step turns yet—follow the map line for corridor context and wait for the full itinerary
+              below for charging decisions.
+            </p>
+            <div style={{ fontSize: 12, color: "#333" }}>
+              Trip (preview): ~{Math.round(routePreview.preview.tripTimeMinutes)} min driving · ~{" "}
+              {Math.round(routePreview.preview.tripDistanceMiles * 10) / 10} mi
+            </div>
+            <h3 style={{ margin: "12px 0 6px 0", fontSize: 13 }}>Horizon (turn-by-turn)</h3>
+            {routePreview.preview.horizon.maneuvers.length ? (
+              <ol style={{ margin: 0, paddingLeft: 18 }}>
+                {routePreview.preview.horizon.maneuvers.map((m, i) => (
+                  <li
+                    key={`${i}-${m.text.slice(0, 24)}`}
+                    style={{
+                      marginBottom: 10,
+                      fontWeight: m.instructionType === "segment_heading" ? 600 : 400,
+                      listStyleType: m.instructionType === "segment_heading" ? "none" : undefined,
+                      marginLeft: m.instructionType === "segment_heading" ? -18 : undefined
+                    }}
+                  >
+                    {m.text}
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <div style={{ fontSize: 12, color: "#666" }}>No maneuver text from Valhalla for this clip.</div>
+            )}
           </div>
         ) : null}
 
@@ -622,7 +900,59 @@ export default function MapPage() {
               ))}
             </ol>
 
-            <h3 style={{ margin: "16px 0 8px 0", fontSize: 14 }}>Turn-by-turn (MVP)</h3>
+            {plan.status === "ok" && routePreview?.preview?.horizon?.maneuvers?.length ? (
+              <div
+                style={{
+                  marginTop: 16,
+                  padding: 12,
+                  background: "#f0fdfa",
+                  border: "1px solid #99f6e4",
+                  borderRadius: 6
+                }}
+              >
+                <h3 style={{ margin: "0 0 8px 0", fontSize: 14 }}>Road directions (Valhalla)</h3>
+                <p style={{ margin: "0 0 8px 0", fontSize: 11, color: "#555" }}>
+                  {parsedWaypoints.length === 0 ? (
+                    <>
+                      First ~{routePreview.preview.horizon.maxMinutes} min along the <strong>start→end</strong> road
+                      corridor (same geometry as the blue line when the planner does not return per-leg road shapes).
+                    </>
+                  ) : (
+                    <>
+                      ~{routePreview.preview.horizon.maxMinutes} min of driving directions per segment (Valhalla
+                      horizon), listed in order for <strong>each</strong> hop — same merged corridor as the blue line.
+                    </>
+                  )}{" "}
+                  Itinerary stops and charging are optimized separately.
+                </p>
+                <p style={{ margin: "0 0 8px 0", fontSize: 11, color: "#666" }}>
+                  <strong>Beyond the horizon:</strong> long legs have more road than the maneuvers listed here.
+                  Use the itinerary for stop timing and charging; the map line shows the full driving corridor.
+                </p>
+                <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#333" }}>
+                  {routePreview.preview.horizon.maneuvers.map((m, i) => (
+                    <li
+                      key={`rv-${i}-${m.text.slice(0, 20)}`}
+                      style={{
+                        marginBottom: 8,
+                        fontWeight: m.instructionType === "segment_heading" ? 600 : 400,
+                        listStyleType: m.instructionType === "segment_heading" ? "none" : undefined,
+                        marginLeft: m.instructionType === "segment_heading" ? -18 : undefined
+                      }}
+                    >
+                      {m.text}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
+
+            <h3 style={{ margin: "16px 0 8px 0", fontSize: 14 }}>Segment-by-segment (planner)</h3>
+            <p style={{ margin: "0 0 10px 0", fontSize: 11, color: "#666" }}>
+              Estimated hops between stops from the planner (drive/charge times). When{" "}
+              <strong>Road directions (Valhalla)</strong> appears above, use it for turn-by-turn on the road
+              corridor.
+            </p>
             {(() => {
               const legByPair = new Map(
                 plan.legs.map((l) => [`${l.fromStopId}->${l.toStopId}`, l])

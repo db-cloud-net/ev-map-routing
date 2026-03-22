@@ -102,26 +102,15 @@ function legRouteAbortSignal(): AbortSignal | undefined {
   return Number.isFinite(ms) && ms > 0 ? AbortSignal.timeout(Math.floor(ms)) : undefined;
 }
 
+/**
+ * Same shape extraction as `parseValhallaRouteLegJson` — must decode encoded polylines.
+ * Long `/route` responses often use a polyline **string** instead of GeoJSON; `getRoutePolyline` is used for
+ * NREL corridor sampling — without decoding, we fell back to straight-line samples (chargers off-corridor).
+ */
 function extractLineStringFromValhalla(json: any): ItineraryLeg["geometry"] | undefined {
   const leg = json?.trip?.legs?.[0];
-  const shape = leg?.shape;
-
-  if (shape?.type === "LineString" && Array.isArray(shape.coordinates)) {
-    return { type: "LineString", coordinates: shape.coordinates };
-  }
-
-  // Some configurations return coordinates directly as an array.
-  if (Array.isArray(leg?.shape) && (leg.shape as any[]).length > 1) {
-    const coords = leg.shape as any[];
-    if (coords.every((p) => Array.isArray(p) && p.length >= 2)) {
-      return {
-        type: "LineString",
-        coordinates: coords.map((p) => [p[0], p[1]])
-      };
-    }
-  }
-
-  return undefined;
+  const shape = leg?.shape ?? json?.trip?.shape;
+  return shapeFieldToLineString(shape);
 }
 
 export async function getRoutePolyline(from: LatLng, to: LatLng): Promise<ItineraryLeg["geometry"]> {

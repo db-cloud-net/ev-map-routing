@@ -49,7 +49,12 @@ The script builds **`browse`** and installs **Playwright Chromium**. After setup
 
 ### Environment variable source
 
-Keep secrets in `.env` (already supported by `api/src/server.ts`).
+Keep secrets in **`.env` at the repo root** (same folder as the root `package.json`). The API resolves this file whether you run `npm -w api run start` from the repo root or `npm run start` from `api/` — compiled output lives under `api/dist/...`, so older single-path fallback could miss `.env` and leave `NREL_API_KEY` unset (see `findEnvFilePath` in `api/src/server.ts`).
+
+On **Windows**, if the key still looks missing, check for a **user/system** env var set to empty (the server uses `override: true` when loading `.env` so file values win over stale empty vars).
+
+**Valhalla:** `.env.example` may use `VALHALLA_BASE_URL=http://valhalla:8002` for Docker. On the host use **`http://localhost:8002`** (or your LAN IP) unless the hostname `valhalla` resolves (e.g. inside Compose).
+
 Do **not** commit `.env` to git.
 
 For non-secret QA defaults, prefer documenting them in this file and/or using the runner script env overrides.
@@ -59,8 +64,10 @@ For non-secret QA defaults, prefer documenting them in this file and/or using th
 | Variable | Default | Role |
 |----------|---------|------|
 | `PLAN_TOTAL_TIMEOUT_MS` | `120000` | API: hard cap on `planTrip` wall time; responds with HTTP **408** + `debug.reason: planner_timeout` when exceeded |
-| `NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS` | `130000` | Web: `fetch` abort so the UI does not hang past ~client limit (should be ≥ API cap + slack) |
+| `NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS` | `130000` | Web: **`fetch` abort on `POST /plan` only** (not on `/candidates` or `/route-preview`). Raise for long trips (e.g. `300000`). Must be **≥ `PLAN_TOTAL_TIMEOUT_MS` + slack** or the client will cancel before the API finishes. |
+| `NEXT_PUBLIC_ROUTE_PREVIEW_CLIENT_TIMEOUT_MS` | `180000` | Web: abort budget for **merged** `POST /route-preview` fetches so `routePreviewPending` cannot stick forever (which would hide the blue line and chord fallback). |
 | `NEXT_PUBLIC_PREFETCH_CANDIDATES` | `true` | Web map: parallel **`POST /candidates`** (Slice 3) so charger/hotel pins can appear before **`POST /plan`** finishes; set **`false`** to rely on `/plan` + `includeCandidates` only |
+| `NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW` | `true` | Web map: parallel **`POST /route-preview`** (Slice 4) on **single-segment** trips (no waypoints, normal start) for teal dashed line + horizon turn list; set **`false`** to skip |
 
 **Per-stage `/plan` budgets (server-side)** — enforced inside `planTrip` / clients; tune if a stage dominates latency or hits upstream limits.
 

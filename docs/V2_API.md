@@ -113,4 +113,4 @@ Fast **Valhalla-only** preview: **no** EV least-time solver, **no** NREL/Overpas
 
 **Testing:** `node scripts/e2e-route-preview-smoke.mjs` (spawn API; needs geocode + Valhalla like other E2E).
 
-**Web / map:** not wired by default — call when **`POST /plan`** is also in flight (Phase 2 UI).
+**Web / map:** **`/map`** calls **`POST /route-preview`** in parallel with **`POST /plan`** on **normal** trips (normal start, optional **waypoints** as separate hops — one request per consecutive pair) when **`NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW`** is not **`false`** (**`TESTING.md`**). Responses are **merged** into one preview line on the client. Teal **dashed** line + horizon turn list (first segment only for maneuvers when waypoints exist); replaced when **`POST /plan`** succeeds.

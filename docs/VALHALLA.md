@@ -25,6 +25,15 @@ Override with **`VALHALLA_BASE_URL`** in **`.env`** when the planner runs somewh
 | **Windows/macOS** hitting Valhalla on a **NAS** | `http://<NAS-LAN-IP>:8002` (confirm with `GET /status`) |
 | **Local** Valhalla on same machine | `http://127.0.0.1:8002` or `http://localhost:8002` |
 
+## Optional `traffic.tar` warnings (not your routing tiles)
+
+Valhalla may log **`(stat): /custom_files/traffic.tar No such file or directory`** and **`Traffic tile extract could not be loaded`**. That refers to **optional traffic overlay** data, **not** the main graph.
+
+- Your **routing** extract is typically something like **`valhalla_tiles.tar`** (or similar) in `custom_files/`. Logs like **`Tile extract successfully loaded with tile count: …`** mean routing tiles are fine.
+- **`traffic.tar`** is separate. If you don’t use Valhalla’s traffic feature, you can **ignore** those WARN lines, or add an empty/minimal traffic setup only if your image requires it.
+
+Do **not** rename `valhalla_tiles.tar` to `traffic.tar` — they are different products.
+
 ## Verify reachability
 
 ```powershell
