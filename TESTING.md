@@ -69,6 +69,13 @@ For non-secret QA defaults, prefer documenting them in this file and/or using th
 | `NEXT_PUBLIC_PREFETCH_CANDIDATES` | `true` | Web map: parallel **`POST /candidates`** (Slice 3) so charger/hotel pins can appear before **`POST /plan`** finishes; set **`false`** to rely on `/plan` + `includeCandidates` only |
 | `NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW` | `true` | Web map: parallel **`POST /route-preview`** (Slice 4) on **single-segment** trips (no waypoints, normal start) for teal dashed line + horizon turn list (**`preview.horizon`** + optional **`preview.nextHorizon`** second clip); set **`false`** to skip |
 
+**Charger + POI source routing (API / `planTrip`)** — see **[`docs/local-mirror-architecture.md`](docs/local-mirror-architecture.md)** §A4 and **[`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md)** §2.
+
+| Variable | Default | Role |
+|----------|---------|------|
+| `SOURCE_ROUTING_MODE` | *(unset → `remote_only`)* | `remote_only` — live NREL + Overpass. `local_primary_fallback_remote` — mirror first, allow-listed fallback to remote. **`local_primary_fail_closed`** — mirror only (no silent remote switch; **ROUTING_UX_SPEC** fail-closed policy). `dual_read_compare` — dual-read compare path. Invalid values behave as **`remote_only`**. |
+| `SOURCE_ROUTING_MODE_FORCE` | *(unset)* | Set to **`remote_only`** for emergency rollback (C3); see **`sourceRouter.ts`**. |
+
 **Per-stage `/plan` budgets (server-side)** — enforced inside `planTrip` / clients; tune if a stage dominates latency or hits upstream limits.
 
 | Variable | Default | Stage |

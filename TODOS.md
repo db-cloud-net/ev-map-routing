@@ -14,7 +14,7 @@
 
 1. ~~**Commit / push**~~ — **`main`** pushed to origin (2026-03-21); dev API **ts-node-dev** listen stability in **`c07bf96`**.
 2. ~~**Manual verify**~~ — **Done** — see **Manual QA** above.
-3. **Next** — **Slice 3** **`POST /candidates`** **shipped**; **Slice 4** **`POST /route-preview`** **+ map** **shipped** (Phase **1–3** MVP: **`preview.nextHorizon`**, merged multi-hop, §5 UI + “Refining…”). **Larger §4** (iterative refinements toward charge/sleep) **not** started. **Product / UX:** **[`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md)** **§2** mirror + **fail closed** for **`/plan`**; **§4** refinements when prioritized. **Platform (parallel):** **[`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md)**.
+3. **Next** — **Slice 4** **shipped** (Phase **1–3** MVP). **ROUTING_UX_SPEC §2:** **`SOURCE_ROUTING_MODE=local_primary_fail_closed`** implements mirror-only **`/plan`** (no remote fallback). **§4** iterative refinements — when prioritized. **Platform (parallel):** **[`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md)** (mirror ops, dual-read, NAS).
 
 ### Build & test priority (rolling)
 

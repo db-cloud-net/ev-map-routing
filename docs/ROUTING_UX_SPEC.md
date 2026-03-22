@@ -30,6 +30,8 @@ This document captures **product and UX decisions** for EV trip planning with **
 | **Fallback** | **Fail closed** — if mirror is missing, corrupt, or unusable for the request, return a **clear, actionable error** (no silent switch to remote NREL/Overpass for `/plan` under this policy). |
 | **Trust** | Surface **data freshness** (e.g. mirror snapshot date) where it helps user confidence. |
 
+*Implementation note:* Planner API **`SOURCE_ROUTING_MODE=local_primary_fail_closed`** uses the local mirror for charger + POI reads only (no remote fallback). Use **`local_primary_fallback_remote`** when ops wants mirror-first with allow-listed fallback to NREL/Overpass. See **`TESTING.md`** and **`docs/local-mirror-architecture.md`** (A4).
+
 ---
 
 ## 3. Time budget: first screen (≈60 seconds)

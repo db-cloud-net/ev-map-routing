@@ -24,7 +24,12 @@ const localMirrorAdapter = new LocalMirrorAdapter();
 
 function parseSourceRoutingMode(raw: string | undefined): SourceRoutingMode {
   const v = (raw ?? "remote_only").trim();
-  if (v === "remote_only" || v === "local_primary_fallback_remote" || v === "dual_read_compare") {
+  if (
+    v === "remote_only" ||
+    v === "local_primary_fallback_remote" ||
+    v === "local_primary_fail_closed" ||
+    v === "dual_read_compare"
+  ) {
     return v;
   }
   return "remote_only";
@@ -539,6 +544,7 @@ function makePoiProvider(mode: SourceRoutingMode, input: { requestId: string }):
 
 function makeChargerProvider(mode: SourceRoutingMode, input: { requestId: string }) {
   if (mode === "remote_only") return remoteNrelAdapter;
+  if (mode === "local_primary_fail_closed") return localMirrorAdapter;
   if (mode === "local_primary_fallback_remote") {
     return withLocalPrimaryFallbackChargers({ local: localMirrorAdapter, remote: remoteNrelAdapter, requestId: input.requestId });
   }

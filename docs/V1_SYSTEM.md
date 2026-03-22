@@ -10,7 +10,7 @@ For **product behavior** (overnight stops, hotels, charging invariants), keep [`
 
 - **Monorepo:** `web/` (Next.js 14 app, map + Plan Trip UI), `api/` (Express + TypeScript planner).
 - **Core user flow:** Browser → `POST /api` → `POST /plan` → `planTrip()` resolves chargers + POIs via a **source router**, builds legs with **Valhalla** time/distance, applies overnight/hotel logic per PRD.
-- **Optional:** **Local mirror** of NREL + Overpass data (NDJSON + manifest), with routing modes (`remote_only`, `local_primary_fallback_remote`, `dual_read_compare`) and observability logs.
+- **Optional:** **Local mirror** of NREL + Overpass data (NDJSON + manifest), with routing modes: `remote_only`, `local_primary_fallback_remote`, **`local_primary_fail_closed`** (mirror-only, **ROUTING_UX_SPEC** §2 fail-closed), `dual_read_compare` — plus observability logs.
 
 ---
 

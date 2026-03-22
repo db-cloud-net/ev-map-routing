@@ -474,6 +474,11 @@ type SourceRoutingMode =
    */
   | "local_primary_fallback_remote"
   /**
+   * Mirror only — no remote fallback for charger/POI reads (**ROUTING_UX_SPEC** §2 fail-closed).
+   * Implemented in `api/src/sourceRouter.ts` as direct `LocalMirrorAdapter` wiring.
+   */
+  | "local_primary_fail_closed"
+  /**
    * Call mirror + remote, compare results, return one “primary” response (see A4.6).
    * Outlined for C1; do not ship before local-primary path is stable (**5A**).
    */
@@ -486,7 +491,7 @@ type SourceRoutingMode =
 
 | Env (proposal) | Values | Notes |
 | --- | --- | --- |
-| `SOURCE_ROUTING_MODE` | `remote_only` \| `local_primary_fallback_remote` \| `dual_read_compare` | Invalid value → treat as `remote_only` and log **once per process** at startup + structured warn per request (implementation choice; must be testable). |
+| `SOURCE_ROUTING_MODE` | `remote_only` \| `local_primary_fallback_remote` \| `local_primary_fail_closed` \| `dual_read_compare` | Invalid value → treat as `remote_only` and log **once per process** at startup + structured warn per request (implementation choice; must be testable). |
 | `MIRROR_ROOT` | absolute or container path | Root containing `current/manifest.json` (A1). Ignored when mode is `remote_only` unless adapters still probe — **recommended:** skip mirror entirely when `remote_only`. |
 
 **Future (non-blocking):** split knobs `CHARGER_SOURCE_ROUTING_MODE` / `POI_SOURCE_ROUTING_MODE` if product needs asymmetric rollout; v1 keeps **one** mode for both.
@@ -540,6 +545,12 @@ For **each** interface method invocation:
 `CONFIG_MISSING` (remote may still fail — try anyway only if mirror failed for unrelated reasons; typically NREL key exists), `REMOTE_*` (should not come from mirror), `MIRROR_UNAVAILABLE`, `MIRROR_MANIFEST_MISSING`, `MIRROR_MANIFEST_INVALID`, `MIRROR_ARTIFACT_MISSING`, `MIRROR_ARTIFACT_CORRUPT`, `SCHEMA_MISMATCH`, `SNAPSHOT_INVALID`, `STALE_SNAPSHOT` (subject to A5), `REMOTE_TIMEOUT` when `source === "mirror"`.
 
 **Do not fall back** when the error is judged **non-transient and operator-fixable** without remote (optional strict flag later, **D2**): e.g. `SCHEMA_MISMATCH` after an intentional major bump might prefer fail-fast — v1 **still falls back** to remote so `/plan` keeps working during rollout.
+
+#### `local_primary_fail_closed`
+
+1. `chargers` = **`LocalMirrorAdapter`** (no decorator; no remote attempt on throw).
+2. `pois` = **`LocalMirrorAdapter`**.
+3. **ROUTING_UX_SPEC** §2: mirror missing/corrupt/unusable → **`SourceError`** surfaces to `planTrip` / HTTP **400** with actionable message — **no** silent NREL/Overpass fallback.
 
 #### `dual_read_compare` (**specified, not implemented yet**)
 

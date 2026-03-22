@@ -65,7 +65,13 @@ export type PoiProvider = {
 
 export type SourceRoutingMode =
   | "remote_only"
+  /** Mirror first; on mirror SourceErrors in the allow-list, call NREL/Overpass (ROUTING_UX_SPEC §2 “fallback”). */
   | "local_primary_fallback_remote"
+  /**
+   * Mirror only for charger + POI reads — no remote fallback (ROUTING_UX_SPEC §2 fail-closed policy for `/plan`).
+   * Use when mirror must be authoritative; surface `SourceError` to the client instead of silent remote switch.
+   */
+  | "local_primary_fail_closed"
   | "dual_read_compare";
 
 export type PlanProviderBundle = {
