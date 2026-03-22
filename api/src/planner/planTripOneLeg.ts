@@ -7,7 +7,7 @@ import type {
 import { NoFeasibleItineraryError, planLeastTimeSegment } from "./leastTimeSegment";
 import { planTripOneLegLockedChargerChain } from "./planTripOneLegLocked";
 import { haversineMiles } from "./geo";
-import { resolvePlanProviders } from "../sourceRouter";
+import { resolvePlanProviders, sourceRoutingDebugFromMeta } from "../sourceRouter";
 import { fetchCorridorChargersForLeg } from "./corridorCandidates";
 
 export type PlanTripOneLegInput = {
@@ -66,6 +66,7 @@ export async function planTripOneLegFromCoords(
     });
     const chargersProvider = providers.chargers;
     const poisProvider = providers.pois;
+    debug.sourceRouting = sourceRoutingDebugFromMeta(providers.meta);
 
     const rangeMiles = Number(process.env.EV_RANGE_MILES ?? "260");
     const bufferSoc = Number(process.env.CHARGE_BUFFER_SOC ?? "0");

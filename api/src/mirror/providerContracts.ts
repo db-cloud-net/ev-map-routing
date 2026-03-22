@@ -81,6 +81,10 @@ export type PlanProviderBundle = {
     mode: SourceRoutingMode;
     mirrorSnapshotId?: string;
     mirrorSchemaVersion?: MirrorSchemaVersion;
+    /** ISO timestamp from mirror manifest when present (ROUTING_UX_SPEC §2 trust). */
+    mirrorCreatedAt?: string;
+    /** Hours since manifest `createdAt` when parseable. */
+    mirrorAgeHours?: number;
     effectiveSourceRoutingMode: SourceRoutingMode;
   };
 };

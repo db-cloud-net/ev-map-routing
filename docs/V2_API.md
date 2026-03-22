@@ -43,6 +43,7 @@ User replans from **current** coordinates or a **planned stop** to **`end`** (an
 - **`replanFrom.stopId`:** Resolved against **`previousStops`** (same `id` as a prior `stops[]` entry). Logs include **`stopId`** only.
 - **`lockedChargersByLeg` / `lockedHotelId`:** Apply to **remainder** legs only (same row count as `max(1, waypoints.length + 1)` for the remainder trip).
 - Successful responses may include **`debug.replan: true`** when the plan used mid-journey replan (`replanFrom`).
+- **`debug.sourceRouting`** — **`sourceRoutingMode`**, **`effectiveSourceRoutingMode`**, and when the mirror tier is active: **`mirrorSnapshotId`**, **`mirrorSchemaVersion`**, **`mirrorCreatedAt`**, **`mirrorAgeHours`** (ROUTING_UX_SPEC §2 trust). Present on **`POST /plan`** and candidates-only **`POST /candidates`** success bodies when applicable.
 
 ## Response
 

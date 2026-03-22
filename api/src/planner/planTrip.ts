@@ -8,7 +8,7 @@ import { planTripOneLegFromCoords } from "./planTripOneLeg";
 import { validateLockedChargersByLeg } from "./lockValidation";
 import { resolvePlanStart, type ReplanFromInput } from "./replanResolve";
 import { fetchCorridorChargersForLeg } from "./corridorCandidates";
-import { resolvePlanProviders } from "../sourceRouter";
+import { resolvePlanProviders, sourceRoutingDebugFromMeta } from "../sourceRouter";
 
 export type PlanTripPlannerInput = {
   requestId: string;
@@ -83,6 +83,7 @@ export async function planTripCandidatesOnly(
   const { startCoords } = resolved;
   const logEvent = makeCandidatesLogEvent(input.requestId);
   const providers = resolvePlanProviders({ requestId: input.requestId });
+  const sourceRouting = sourceRoutingDebugFromMeta(providers.meta);
   const overnightHotelRadiusMeters = Number(
     process.env.OVERNIGHT_HOTEL_RADIUS_METERS ??
       String(Number(process.env.HOTEL_RADIUS_METERS ?? "365.76"))
@@ -115,7 +116,7 @@ export async function planTripCandidatesOnly(
       responseVersion,
       status: "ok",
       candidates: corridor.candidatesForResponse,
-      debug: { corridor: corridor.debug }
+      debug: { corridor: corridor.debug, sourceRouting }
     };
   }
 
@@ -168,7 +169,7 @@ export async function planTripCandidatesOnly(
     responseVersion,
     status: "ok",
     candidates,
-    debug: { multiLeg: true, legCount: points.length - 1 }
+    debug: { multiLeg: true, legCount: points.length - 1, sourceRouting }
   };
 }
 
@@ -296,6 +297,12 @@ async function planTripMultiLeg(
         }
       : undefined;
 
+  const firstLegDbg = legDebugs[0];
+  const topSourceRouting =
+    firstLegDbg && typeof firstLegDbg === "object" && firstLegDbg !== null && "sourceRouting" in firstLegDbg
+      ? (firstLegDbg as Record<string, unknown>).sourceRouting
+      : undefined;
+
   return {
     requestId: input.requestId,
     responseVersion: input.responseVersion,
@@ -314,7 +321,8 @@ async function planTripMultiLeg(
     debug: {
       multiLeg: true,
       legCount: points.length - 1,
-      legs: legDebugs
+      legs: legDebugs,
+      ...(topSourceRouting !== undefined ? { sourceRouting: topSourceRouting } : {})
     }
   };
 }

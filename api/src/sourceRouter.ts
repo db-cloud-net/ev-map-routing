@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import type {
   ChargerPointMode,
+  MirrorSchemaVersion,
   PlanProviderBundle,
   LatLng,
   PoiProvider,
@@ -104,9 +105,30 @@ export function resolvePlanProviders(input: {
     pois: makePoiProvider(effectiveSourceRoutingMode, input),
     meta: {
       mode: configuredMode,
-      effectiveSourceRoutingMode
+      effectiveSourceRoutingMode,
+      ...(usesMirror
+        ? {
+            mirrorSnapshotId: mirrorManifest.snapshotId,
+            mirrorSchemaVersion: mirrorManifest.schemaVersion as MirrorSchemaVersion | undefined,
+            mirrorCreatedAt: mirrorManifest.createdAt,
+            ...(mirrorAgeHours != null ? { mirrorAgeHours } : {})
+          }
+        : {})
     }
   };
+}
+
+/** Compact JSON for `POST /plan` `debug.sourceRouting` (ROUTING_UX_SPEC §2). */
+export function sourceRoutingDebugFromMeta(meta: PlanProviderBundle["meta"]): Record<string, unknown> {
+  const o: Record<string, unknown> = {
+    sourceRoutingMode: meta.mode,
+    effectiveSourceRoutingMode: meta.effectiveSourceRoutingMode
+  };
+  if (meta.mirrorSnapshotId) o.mirrorSnapshotId = meta.mirrorSnapshotId;
+  if (meta.mirrorSchemaVersion) o.mirrorSchemaVersion = meta.mirrorSchemaVersion;
+  if (meta.mirrorCreatedAt) o.mirrorCreatedAt = meta.mirrorCreatedAt;
+  if (meta.mirrorAgeHours != null) o.mirrorAgeHours = meta.mirrorAgeHours;
+  return o;
 }
 
 function shouldLogPlan() {

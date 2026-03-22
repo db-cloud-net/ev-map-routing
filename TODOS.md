@@ -2,19 +2,20 @@
 
 **Resume local mirror work:** [`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md) *(what’s done, next steps, file index — updated 2026-03-20).*
 
-## Current status (snapshot — **2026-03-22**)
+## Current status (snapshot — **2026-03-23**)
 
 **DRI:** David *(adjust if ownership changes)*
 
 **Manual QA:** **`TESTING.md`** § *Version 2 smoke* + locks (step 5) + **Phase 1 exit** (replan / Raleigh→Greensboro) — **completed** (2026-03-19).
 
-**P0 gate on `main`:** `npm -w api run build` · `npm run qa:smoke` · `npm -w web run build` — **all green** (2026-03-21); re-run after substantive changes.
+**P0 gate on `main`:** `npm -w api run build` · `npm run qa:smoke` · `npm -w web run build` — re-run after substantive changes (E2E **`E2E_SPAWN_PORT`** + **`debug.sourceRouting`** landed **2026-03-23**).
 
 ### Immediate next steps (pick one)
 
-1. ~~**Commit / push**~~ — **`main`** pushed to origin (2026-03-21); dev API **ts-node-dev** listen stability in **`c07bf96`**.
-2. ~~**Manual verify**~~ — **Done** — see **Manual QA** above.
-3. **Next** — **Slice 4** + **§4 MVP** (staged refinement checklist + anchor line on **`/map`**). **§4 remainder:** server-side multi-round refinement + waypoint reorder. **§2:** **`SOURCE_ROUTING_MODE=local_primary_fail_closed`**. **Platform (parallel):** **[`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md)**.
+1. ~~**Commit / push**~~ — **`main`** includes **`qa:smoke`** port/env fix (**`6a7bc3e`** area) + ongoing work.
+2. ~~**§4 MVP (map checklist)**~~ — shipped; **§4 remainder** (server-side multi-round refinement + waypoint reorder) is **larger** — schedule explicitly.
+3. ~~**§2 trust (API)**~~ — **`debug.sourceRouting`** on **`POST /plan`** / **`/candidates`** (mirror id + age when mirror tier active).
+4. **Next** — **§4 refinement loops** or **mirror / NAS** ops per **[`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md)** · optional **web** surfacing of **`debug.sourceRouting`** on map Debug panel.
 
 ### Build & test priority (rolling)
 
