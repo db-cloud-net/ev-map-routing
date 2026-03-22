@@ -61,6 +61,8 @@ If **60s** cannot be met in practice, **relax other constraints** (coarser globa
 
 **Ordering constraint:** Waypoint **reorder** must be **time-boxed** or **bounded** so phase-1 can return within the **60s** budget; if the best order isn’t final yet, the UI must **invalidate or relabel** when the order changes.
 
+*Implementation note (MVP):* **`/map`** shows a **three-stage checklist** (road preview → candidate pins → `/plan` itinerary), plus an ordered **refinement anchors** line from planner stops. This is **not** a server-side multi-round loop yet; see **`docs/designs/slice4-progressive-first-screen.md`** Phase **4**.
+
 ---
 
 ## 5. Safety: never strand the driver on directions

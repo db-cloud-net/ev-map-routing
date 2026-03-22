@@ -23,6 +23,26 @@ function abortSignalAfterMs(ms: number): AbortSignal | undefined {
   return c.signal;
 }
 
+type RefinementStage = "skipped" | "pending" | "active" | "done" | "error" | "idle";
+
+function refinementStageStyle(s: RefinementStage): { glyph: string; color: string } {
+  switch (s) {
+    case "done":
+      return { glyph: "✓", color: "#15803d" };
+    case "error":
+      return { glyph: "✗", color: "#b91c1c" };
+    case "skipped":
+      return { glyph: "—", color: "#9ca3af" };
+    case "active":
+      return { glyph: "◐", color: "#0369a1" };
+    case "idle":
+      return { glyph: "○", color: "#d1d5db" };
+    case "pending":
+    default:
+      return { glyph: "◔", color: "#78716c" };
+  }
+}
+
 export default function MapPage() {
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -100,6 +120,25 @@ export default function MapPage() {
     }
     return "EV least-time planner running (chargers, stops, times).";
   }, [loading, routePreviewPending]);
+
+  /** ROUTING_UX_SPEC §4 — staged refinement (MVP: honest pipeline, not server-side loops). */
+  const prefetchCandidatesEnv = useMemo(
+    () => (process.env.NEXT_PUBLIC_PREFETCH_CANDIDATES ?? "true").toLowerCase() !== "false",
+    []
+  );
+  const prefetchRoutePreviewEnv = useMemo(
+    () => (process.env.NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW ?? "true").toLowerCase() !== "false",
+    []
+  );
+  const previewChainForRefinement = useMemo(
+    () => (replanMode === "off" ? routePreviewSegmentChain(start, parsedWaypoints, end) : []),
+    [replanMode, start, parsedWaypoints, end]
+  );
+  const roadPreviewEnabled = previewChainForRefinement.length >= 2 && prefetchRoutePreviewEnv;
+
+  const hasPlanActivity = Boolean(
+    loading || plan !== null || routePreview !== null || candidatePreview !== null || error !== null
+  );
 
   /** Latest single-leg lock row + hotel for backup when entering multi-waypoint mode. */
   const locksSnapshotRef = useRef<{ chargers: string[]; hotel: string | null }>({
@@ -645,6 +684,33 @@ export default function MapPage() {
     }
   }
 
+  const roadRefinementStage: RefinementStage = (() => {
+    if (!roadPreviewEnabled) return "skipped";
+    if (routePreview?.status === "ok") return "done";
+    if (routePreview?.status === "error") return "error";
+    if (!hasPlanActivity) return "idle";
+    if (loading && routePreviewPending) return "active";
+    if (loading) return "pending";
+    return "pending";
+  })();
+
+  const candidatesRefinementStage: RefinementStage = (() => {
+    if (!prefetchCandidatesEnv) return "skipped";
+    if (candidatePreview != null) return "done";
+    if (!loading && plan !== null) return "done";
+    if (!hasPlanActivity) return "idle";
+    if (loading) return "active";
+    return "pending";
+  })();
+
+  const planRefinementStage: RefinementStage = (() => {
+    if (plan?.status === "ok") return "done";
+    if (error || plan?.status === "error") return "error";
+    if (!hasPlanActivity) return "idle";
+    if (loading) return "active";
+    return "pending";
+  })();
+
   return (
     <div
       style={{
@@ -670,6 +736,67 @@ export default function MapPage() {
           coral hotel to prefer it for overnight (when needed). Clear locks by clicking again. Multi-stop waypoints
           disable map locking for now.
         </p>
+
+        <div
+          style={{
+            marginTop: 12,
+            padding: "10px 12px",
+            background: "#fafafa",
+            border: "1px solid #e5e7eb",
+            borderRadius: 6
+          }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Progressive refinement (ROUTING_UX_SPEC §4)</div>
+          <p style={{ margin: "0 0 8px 0", fontSize: 11, color: "#666" }}>
+            Stages: road corridor → along-route pins → full EV itinerary. This MVP shows the pipeline; per-anchor
+            geometry loops are future work. Waypoint <strong>order</strong> follows your input (automated reorder is not
+            applied yet).
+          </p>
+          {(() => {
+            const roadSub =
+              roadRefinementStage === "skipped"
+                ? replanMode !== "off"
+                  ? "Skipped: replan flow does not run parallel /route-preview."
+                  : !prefetchRoutePreviewEnv
+                    ? "Skipped: NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW=false."
+                    : "Skipped: no preview chain for this trip."
+                : undefined;
+            const candSub =
+              candidatesRefinementStage === "skipped"
+                ? "Skipped: NEXT_PUBLIC_PREFETCH_CANDIDATES=false."
+                : undefined;
+            const rows: Array<{ label: string; stage: RefinementStage; sub?: string }> = [
+              { label: "1. Road corridor (Valhalla /route-preview)", stage: roadRefinementStage, sub: roadSub },
+              { label: "2. Along-route candidate pins (/candidates)", stage: candidatesRefinementStage, sub: candSub },
+              { label: "3. EV itinerary (POST /plan)", stage: planRefinementStage }
+            ];
+            return rows.map((r) => {
+              const st = refinementStageStyle(r.stage);
+              return (
+                <div
+                  key={r.label}
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "flex-start",
+                    marginBottom: 4,
+                    fontSize: 12
+                  }}
+                >
+                  <span style={{ color: st.color, fontWeight: 700, width: 18, flexShrink: 0 }} aria-hidden>
+                    {st.glyph}
+                  </span>
+                  <div>
+                    <div style={{ color: "#374151" }}>{r.label}</div>
+                    {r.sub ? (
+                      <div style={{ fontSize: 11, color: "#9ca3af" }}>{r.sub}</div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            });
+          })()}
+        </div>
 
         <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
           <fieldset style={{ margin: 0, padding: "10px 12px", border: "1px solid #ddd", borderRadius: 6 }}>
@@ -961,6 +1088,27 @@ export default function MapPage() {
                 </li>
               ))}
             </ol>
+
+            {plan.status === "ok" && plan.stops.filter((s) => s.type !== "start").length > 0 ? (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: 10,
+                  background: "#f9fafb",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: "#4b5563"
+                }}
+              >
+                <strong>Refinement anchors (§4):</strong> ordered stops after start —{" "}
+                {plan.stops
+                  .filter((s) => s.type !== "start")
+                  .map((s) => `${s.type}: ${s.name}`)
+                  .join(" → ")}
+                . Each leg adds modeled drive/charge time in the segment table below.
+              </div>
+            ) : null}
 
             {plan.status === "ok" &&
             routePreview?.preview &&

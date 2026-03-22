@@ -1,6 +1,6 @@
 # Slice 4 — progressive ~60s first screen (design)
 
-**Status:** **Partially implemented** — **Phase 1** `POST /route-preview` + smoke; **Phase 2** map preview (teal line, merged multi-waypoint); **Phase 3** **shipped (MVP):** honest Plan button states; §5 **second horizon** prefetched in the **same** `/route-preview` response (`preview.nextHorizon`) + merged on multi-hop; map copy + “Refining…” while `/plan` runs; itinerary “Full plan up to date.” **Remaining (larger §4):** iterative refinements toward next charge/sleep with live updates — not a single-shot preview + plan. Normative product text remains **[ROUTING_UX_SPEC.md](../ROUTING_UX_SPEC.md)** §3–§5.  
+**Status:** **Partially implemented** — **Phase 1** `POST /route-preview` + smoke; **Phase 2** map preview (teal line, merged multi-waypoint); **Phase 3** **shipped (MVP):** honest Plan button states; §5 **second horizon** (`preview.nextHorizon`); **Phase 4 (§4 MVP):** **`/map`** progressive refinement **checklist** + **refinement anchors** line from planner stops. **Still open:** server-side multi-round refinement loops + waypoint reorder. Normative product text remains **[ROUTING_UX_SPEC.md](../ROUTING_UX_SPEC.md)** §3–§5.  
 **Normative product decisions** stay in **ROUTING_UX_SPEC**; this doc is **proposed** API + client shape until reviewed.
 
 **Depends on:** **[Slice 3](./slice3-get-candidates.md)** (`POST /candidates` + optional map prefetch) — **shipped**.  
@@ -114,7 +114,7 @@ For Slice 4:
 | **1** | **Done (API)** — **`POST /route-preview`** (`api/src/planner/routePreview.ts`, **`v2-1-route-preview`**) + horizon clip + **`scripts/e2e-route-preview-smoke.mjs`** in **`npm run qa:smoke`**. **No map UI yet.** |
 | **2** | **Done** — Map (`web/src/app/map/page.tsx`): **`POST /route-preview`** in parallel with **`/plan`** (single segment); teal dashed line + horizon TBT panel; cleared on successful plan. Env: **`NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW`**. |
 | **3** | **Done (MVP)** — API: **`preview.nextHorizon`** (second clip from same Valhalla response). Web: merged second horizons, §5 “next segment” banner, “Refining…” line, Road directions + preview show first + next lists. **Not done:** §4 multi-round refinement loop (charge/sleep anchors). |
-| **4** | Multi-waypoint + reorder interaction with spec §4. *(Multi-waypoint preview merge is already shipped; §4 reorder UX still open.)* |
+| **4** | **§4 MVP (web):** staged **Progressive refinement** checklist + **refinement anchors** line after a successful plan (honest copy: waypoint order fixed to user input; no automated reorder). **Not done:** iterative server-side refinement loops + reorder UX. *(Multi-waypoint preview merge already shipped.)* |
 
 ---
 

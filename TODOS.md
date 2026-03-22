@@ -14,7 +14,7 @@
 
 1. ~~**Commit / push**~~ — **`main`** pushed to origin (2026-03-21); dev API **ts-node-dev** listen stability in **`c07bf96`**.
 2. ~~**Manual verify**~~ — **Done** — see **Manual QA** above.
-3. **Next** — **Slice 4** **shipped** (Phase **1–3** MVP). **ROUTING_UX_SPEC §2:** **`SOURCE_ROUTING_MODE=local_primary_fail_closed`** implements mirror-only **`/plan`** (no remote fallback). **§4** iterative refinements — when prioritized. **Platform (parallel):** **[`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md)** (mirror ops, dual-read, NAS).
+3. **Next** — **Slice 4** + **§4 MVP** (staged refinement checklist + anchor line on **`/map`**). **§4 remainder:** server-side multi-round refinement + waypoint reorder. **§2:** **`SOURCE_ROUTING_MODE=local_primary_fail_closed`**. **Platform (parallel):** **[`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md)**.
 
 ### Build & test priority (rolling)
 
