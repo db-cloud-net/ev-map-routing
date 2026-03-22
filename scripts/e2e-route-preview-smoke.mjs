@@ -107,6 +107,17 @@ async function main() {
         r.json.preview.horizon.maneuvers.length >= 1,
       "expected at least one horizon maneuver"
     );
+    const p = r.json.preview;
+    if (p.nextHorizon) {
+      assert(
+        Array.isArray(p.nextHorizon.maneuvers),
+        "when nextHorizon is present, maneuvers must be an array"
+      );
+      assert(
+        p.nextHorizon.maneuvers.length >= 1,
+        "expected nextHorizon to include at least one maneuver when present (Raleigh→Greensboro corridor)"
+      );
+    }
 
     const badWp = await postRoutePreview({
       start: "Raleigh, NC",

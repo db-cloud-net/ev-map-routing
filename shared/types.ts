@@ -125,6 +125,12 @@ export type RoutePreviewBody = {
   tripTimeMinutes: number;
   tripDistanceMiles: number;
   horizon: RoutePreviewHorizon;
+  /**
+   * Second time-budgeted clip from the same Valhalla maneuver list (after `horizon`).
+   * Satisfies ROUTING_UX_SPEC §5 “next segment ready or in flight” without a second HTTP round-trip.
+   * Omitted when the route ends within the first horizon or there are no remaining maneuvers.
+   */
+  nextHorizon?: RoutePreviewHorizon;
 };
 
 export type RoutePreviewApiResponse = {

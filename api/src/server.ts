@@ -255,7 +255,8 @@ app.post("/route-preview", async (req, res) => {
         responseVersion,
         status: result.status,
         durationMs: Date.now() - startedAt,
-        previewManeuvers: result.preview?.horizon.maneuvers.length ?? 0
+        previewManeuvers: result.preview?.horizon.maneuvers.length ?? 0,
+        previewNextManeuvers: result.preview?.nextHorizon?.maneuvers.length ?? 0
       })
     );
     res.status(result.status === "ok" ? 200 : 400).json({

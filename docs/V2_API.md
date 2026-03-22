@@ -107,10 +107,10 @@ Fast **Valhalla-only** preview: **no** EV least-time solver, **no** NREL/Overpas
 | **Method** | `POST /route-preview` |
 | **Body** | `{ "start": string, "end": string }` — **v1:** no `waypoints`, no `replanFrom` (omit multi-stop until a later phase). |
 | **Response** | `requestId`, `responseVersion`: **`v2-1-route-preview`**, `status`, optional `message` / **`errorCode`**, optional **`preview`** on success. |
-| **`preview` (ok)** | **`polyline`**: GeoJSON **LineString**; **`tripTimeMinutes`**, **`tripDistanceMiles`** (from Valhalla summary when present); **`horizon`**: `{ maxMinutes, maneuvers[], cumulativeTimeSeconds }` — clipped per **ROUTING_UX_SPEC** §3 guardrails. |
+| **`preview` (ok)** | **`polyline`**: GeoJSON **LineString**; **`tripTimeMinutes`**, **`tripDistanceMiles`** (from Valhalla summary when present); **`horizon`**: `{ maxMinutes, maneuvers[], cumulativeTimeSeconds }` — first time-budgeted clip (§3 guardrails); optional **`nextHorizon`**: same shape — **second** clip from the **same** Valhalla maneuver list (§5 “next segment ready” without a second HTTP call). Omitted when the route ends within the first horizon. |
 
 **Error codes (non-exhaustive):** `GEOCODE_FAILED`, `VALHALLA_ROUTE_PREVIEW_FAILED`, `ROUTE_PREVIEW_NO_GEOMETRY`, `ROUTE_PREVIEW_FAILED`; validation: waypoints in v1 → HTTP **400**.
 
 **Testing:** `node scripts/e2e-route-preview-smoke.mjs` (spawn API; needs geocode + Valhalla like other E2E).
 
-**Web / map:** **`/map`** calls **`POST /route-preview`** in parallel with **`POST /plan`** on **normal** trips (normal start, optional **waypoints** as separate hops — one request per consecutive pair) when **`NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW`** is not **`false`** (**`TESTING.md`**). Responses are **merged** into one preview line on the client. Teal **dashed** line + horizon turn list (first segment only for maneuvers when waypoints exist); replaced when **`POST /plan`** succeeds.
+**Web / map:** **`/map`** calls **`POST /route-preview`** in parallel with **`POST /plan`** on **normal** trips (normal start, optional **waypoints** as separate hops — one request per consecutive pair) when **`NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW`** is not **`false`** (**`TESTING.md`**). Responses are **merged** into one preview line on the client. Teal **dashed** line + **first + second** horizon turn lists when Valhalla has enough maneuvers (merged across hops); replaced when **`POST /plan`** succeeds.

@@ -67,7 +67,7 @@ For non-secret QA defaults, prefer documenting them in this file and/or using th
 | `NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS` | `130000` | Web: **`fetch` abort on `POST /plan` only** (not on `/candidates` or `/route-preview`). Raise for long trips (e.g. `300000`). Must be **≥ `PLAN_TOTAL_TIMEOUT_MS` + slack** or the client will cancel before the API finishes. |
 | `NEXT_PUBLIC_ROUTE_PREVIEW_CLIENT_TIMEOUT_MS` | `180000` | Web: abort budget for **merged** `POST /route-preview` fetches so `routePreviewPending` cannot stick forever (which would hide the blue line and chord fallback). |
 | `NEXT_PUBLIC_PREFETCH_CANDIDATES` | `true` | Web map: parallel **`POST /candidates`** (Slice 3) so charger/hotel pins can appear before **`POST /plan`** finishes; set **`false`** to rely on `/plan` + `includeCandidates` only |
-| `NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW` | `true` | Web map: parallel **`POST /route-preview`** (Slice 4) on **single-segment** trips (no waypoints, normal start) for teal dashed line + horizon turn list; set **`false`** to skip |
+| `NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW` | `true` | Web map: parallel **`POST /route-preview`** (Slice 4) on **single-segment** trips (no waypoints, normal start) for teal dashed line + horizon turn list (**`preview.horizon`** + optional **`preview.nextHorizon`** second clip); set **`false`** to skip |
 
 **Per-stage `/plan` budgets (server-side)** — enforced inside `planTrip` / clients; tune if a stage dominates latency or hits upstream limits.
 

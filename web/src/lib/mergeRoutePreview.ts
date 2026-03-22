@@ -70,6 +70,40 @@ export function mergeRoutePreviewHorizons(
   };
 }
 
+/** Per-segment second horizons (ROUTING_UX_SPEC §5 prefetch), merged for multi-hop previews. */
+export function mergeSecondHorizons(
+  ok: RoutePreviewApiResponse[],
+  segmentPairs: Array<[string, string]>
+): RoutePreviewHorizon | null {
+  const maneuvers: NonNullable<ItineraryLeg["maneuvers"]> = [];
+  let cumulativeTimeSeconds = 0;
+  let maxMinutesSum = 0;
+  let any = false;
+
+  for (let i = 0; i < ok.length; i++) {
+    const nh = ok[i].preview?.nextHorizon;
+    if (!nh?.maneuvers?.length) continue;
+    any = true;
+    maxMinutesSum += nh.maxMinutes;
+    const [from, to] = segmentPairs[i];
+    maneuvers.push({
+      text: `Segment ${i + 1} (next horizon): ${from} → ${to}`,
+      instructionType: "segment_heading"
+    });
+    for (const m of nh.maneuvers) {
+      maneuvers.push({ ...m });
+      cumulativeTimeSeconds += typeof m.timeSeconds === "number" ? m.timeSeconds : 0;
+    }
+  }
+
+  if (!any) return null;
+  return {
+    maxMinutes: maxMinutesSum,
+    maneuvers,
+    cumulativeTimeSeconds
+  };
+}
+
 /**
  * One or more parallel `POST /route-preview` calls (v1 is single-leg only); merges polylines for map + TBT.
  * Returns `null` if any segment fails or response is invalid.
@@ -118,6 +152,7 @@ export async function fetchMergedRoutePreview(
   }
 
   const horizon = mergeRoutePreviewHorizons(ok, pairs);
+  const nextHorizonMerged = mergeSecondHorizons(ok, pairs);
 
   const merged: RoutePreviewApiResponse = {
     requestId: ok.map((r) => r.requestId).join("+"),
@@ -130,7 +165,8 @@ export async function fetchMergedRoutePreview(
       },
       tripTimeMinutes,
       tripDistanceMiles,
-      horizon
+      horizon,
+      ...(nextHorizonMerged ? { nextHorizon: nextHorizonMerged } : {})
     }
   };
 

@@ -135,6 +135,19 @@ export async function buildRoutePreviewSingleLeg(input: {
       minManeuvers
     });
 
+    const rest = maneuvers.slice(horizon.length);
+    let nextHorizon: RoutePreviewBody["nextHorizon"];
+    if (rest.length > 0) {
+      const second = clipManeuversToHorizon(rest, { maxMinutes, minManeuvers });
+      if (second.horizon.length > 0) {
+        nextHorizon = {
+          maxMinutes,
+          maneuvers: second.horizon,
+          cumulativeTimeSeconds: second.cumulativeTimeSeconds
+        };
+      }
+    }
+
     const preview: RoutePreviewBody = {
       polyline: route.geometry,
       tripTimeMinutes,
@@ -143,7 +156,8 @@ export async function buildRoutePreviewSingleLeg(input: {
         maxMinutes,
         maneuvers: horizon,
         cumulativeTimeSeconds
-      }
+      },
+      ...(nextHorizon ? { nextHorizon } : {})
     };
 
     return {

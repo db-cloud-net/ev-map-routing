@@ -831,23 +831,54 @@ export default function MapPage() {
             }}
           >
             <h2 style={{ margin: "0 0 8px 0", fontSize: 15 }}>Approximate road route (preview)</h2>
+            {loading && routePreview.status === "ok" ? (
+              <p style={{ margin: "0 0 8px 0", fontSize: 12, color: "#0f766e" }}>
+                <strong>Refining:</strong> EV least-time planner is still running; this road preview updates first.
+              </p>
+            ) : null}
             <p style={{ margin: "0 0 8px 0", fontSize: 12, color: "#444" }}>
               Valhalla driving line (teal dashed on map) and turn-by-turn
               {parsedWaypoints.length === 0 ? (
                 <>
                   {" "}
-                  (first ~{routePreview.preview.horizon.maxMinutes} min of driving)
+                  (first ~{routePreview.preview.horizon.maxMinutes} min of driving
+                  {routePreview.preview.nextHorizon?.maneuvers?.length
+                    ? `, plus a second ~${routePreview.preview.nextHorizon.maxMinutes} min chunk prefetched`
+                    : ""}
+                  )
                 </>
               ) : (
                 <> for each segment — same list after planning finishes</>
               )}
               . No EV charging or stops yet; the full itinerary appears when planning finishes.
             </p>
+            <div
+              style={{
+                margin: "0 0 10px 0",
+                padding: "8px 10px",
+                fontSize: 11,
+                color: "#065f46",
+                background: "#ecfdf5",
+                border: "1px solid #6ee7b7",
+                borderRadius: 4
+              }}
+            >
+              <strong>Next segment:</strong>{" "}
+              {routePreview.preview.nextHorizon?.maneuvers?.length ? (
+                <>
+                  Following turns after the first horizon are <strong>prefetched</strong> (see second list below)—not
+                  unknown while you read the first chunk.
+                </>
+              ) : (
+                <>
+                  No second turn list (route likely ends within the first horizon, or Valhalla returned no further
+                  steps). Use the map line for corridor context beyond this text.
+                </>
+              )}
+            </div>
             <p style={{ margin: "0 0 8px 0", fontSize: 11, color: "#666" }}>
-              <strong>Beyond the horizon:</strong> this list only covers the first ~
-              {routePreview.preview.horizon.maxMinutes} min per segment. The rest of each leg is not shown as
-              step-by-step turns yet—follow the map line for corridor context and wait for the full itinerary
-              below for charging decisions.
+              <strong>Beyond the first two chunks:</strong> longer legs still have more road than these lists. Follow
+              the map line and wait for the full itinerary below for charging decisions.
             </p>
             <div style={{ fontSize: 12, color: "#333" }}>
               Trip (preview): ~{Math.round(routePreview.preview.tripTimeMinutes)} min driving · ~{" "}
@@ -873,12 +904,43 @@ export default function MapPage() {
             ) : (
               <div style={{ fontSize: 12, color: "#666" }}>No maneuver text from Valhalla for this clip.</div>
             )}
+            {routePreview.preview.nextHorizon?.maneuvers?.length ? (
+              <>
+                <h3 style={{ margin: "14px 0 6px 0", fontSize: 13 }}>Next horizon (prefetched)</h3>
+                <p style={{ margin: "0 0 6px 0", fontSize: 11, color: "#555" }}>
+                  ~{routePreview.preview.nextHorizon.maxMinutes} min of driving after the first list (same route,
+                  clipped from Valhalla).
+                </p>
+                <ol style={{ margin: 0, paddingLeft: 18 }}>
+                  {routePreview.preview.nextHorizon.maneuvers.map((m, i) => (
+                    <li
+                      key={`nx-${i}-${m.text.slice(0, 24)}`}
+                      style={{
+                        marginBottom: 10,
+                        fontWeight: m.instructionType === "segment_heading" ? 600 : 400,
+                        listStyleType: m.instructionType === "segment_heading" ? "none" : undefined,
+                        marginLeft: m.instructionType === "segment_heading" ? -18 : undefined
+                      }}
+                    >
+                      {m.text}
+                    </li>
+                  ))}
+                </ol>
+              </>
+            ) : null}
           </div>
         ) : null}
 
         {plan ? (
           <div style={{ marginTop: 16 }}>
-            <h2 style={{ margin: "0 0 8px 0", fontSize: 16 }}>Itinerary</h2>
+            <h2 style={{ margin: "0 0 8px 0", fontSize: 16 }}>
+              Itinerary
+              {plan.status === "ok" ? (
+                <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 600, color: "#15803d" }}>
+                  — Full plan up to date
+                </span>
+              ) : null}
+            </h2>
             <div style={{ fontFamily: "monospace", fontSize: 12, color: "#444" }}>
               {plan.totals ? (
                 <div>
@@ -900,7 +962,10 @@ export default function MapPage() {
               ))}
             </ol>
 
-            {plan.status === "ok" && routePreview?.preview?.horizon?.maneuvers?.length ? (
+            {plan.status === "ok" &&
+            routePreview?.preview &&
+            (routePreview.preview.horizon.maneuvers.length > 0 ||
+              (routePreview.preview.nextHorizon?.maneuvers?.length ?? 0) > 0) ? (
               <div
                 style={{
                   marginTop: 16,
@@ -915,35 +980,64 @@ export default function MapPage() {
                   {parsedWaypoints.length === 0 ? (
                     <>
                       First ~{routePreview.preview.horizon.maxMinutes} min along the <strong>start→end</strong> road
-                      corridor (same geometry as the blue line when the planner does not return per-leg road shapes).
+                      corridor (same geometry as the blue line when the planner does not return per-leg road shapes)
+                      {routePreview.preview.nextHorizon?.maneuvers?.length
+                        ? `, plus a second ~${routePreview.preview.nextHorizon.maxMinutes} min chunk prefetched`
+                        : ""}
+                      .
                     </>
                   ) : (
                     <>
                       ~{routePreview.preview.horizon.maxMinutes} min of driving directions per segment (Valhalla
                       horizon), listed in order for <strong>each</strong> hop — same merged corridor as the blue line.
+                      {routePreview.preview.nextHorizon?.maneuvers?.length
+                        ? " A second horizon per segment is merged when available."
+                        : ""}
                     </>
                   )}{" "}
                   Itinerary stops and charging are optimized separately.
                 </p>
                 <p style={{ margin: "0 0 8px 0", fontSize: 11, color: "#666" }}>
-                  <strong>Beyond the horizon:</strong> long legs have more road than the maneuvers listed here.
-                  Use the itinerary for stop timing and charging; the map line shows the full driving corridor.
+                  <strong>Beyond these two chunks:</strong> long legs still have more road than the maneuvers listed
+                  here. Use the itinerary for stop timing and charging; the map line shows the full driving corridor.
                 </p>
-                <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#333" }}>
-                  {routePreview.preview.horizon.maneuvers.map((m, i) => (
-                    <li
-                      key={`rv-${i}-${m.text.slice(0, 20)}`}
-                      style={{
-                        marginBottom: 8,
-                        fontWeight: m.instructionType === "segment_heading" ? 600 : 400,
-                        listStyleType: m.instructionType === "segment_heading" ? "none" : undefined,
-                        marginLeft: m.instructionType === "segment_heading" ? -18 : undefined
-                      }}
-                    >
-                      {m.text}
-                    </li>
-                  ))}
-                </ol>
+                {routePreview.preview.horizon.maneuvers.length ? (
+                  <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#333" }}>
+                    {routePreview.preview.horizon.maneuvers.map((m, i) => (
+                      <li
+                        key={`rv-${i}-${m.text.slice(0, 20)}`}
+                        style={{
+                          marginBottom: 8,
+                          fontWeight: m.instructionType === "segment_heading" ? 600 : 400,
+                          listStyleType: m.instructionType === "segment_heading" ? "none" : undefined,
+                          marginLeft: m.instructionType === "segment_heading" ? -18 : undefined
+                        }}
+                      >
+                        {m.text}
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+                {routePreview.preview.nextHorizon?.maneuvers?.length ? (
+                  <>
+                    <h4 style={{ margin: "12px 0 6px 0", fontSize: 12 }}>Next horizon (prefetched)</h4>
+                    <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#333" }}>
+                      {routePreview.preview.nextHorizon.maneuvers.map((m, i) => (
+                        <li
+                          key={`rv2-${i}-${m.text.slice(0, 20)}`}
+                          style={{
+                            marginBottom: 8,
+                            fontWeight: m.instructionType === "segment_heading" ? 600 : 400,
+                            listStyleType: m.instructionType === "segment_heading" ? "none" : undefined,
+                            marginLeft: m.instructionType === "segment_heading" ? -18 : undefined
+                          }}
+                        >
+                          {m.text}
+                        </li>
+                      ))}
+                    </ol>
+                  </>
+                ) : null}
               </div>
             ) : null}
 
