@@ -54,6 +54,7 @@ function startServer({ port, sourceRoutingMode, forceMode, planLogRequests }) {
     env: {
       ...process.env,
       PORT: String(port),
+      E2E_SPAWN_PORT: String(port),
       SOURCE_ROUTING_MODE: sourceRoutingMode,
       ...(forceMode ? { SOURCE_ROUTING_MODE_FORCE: forceMode } : {}),
       MIRROR_ROOT:

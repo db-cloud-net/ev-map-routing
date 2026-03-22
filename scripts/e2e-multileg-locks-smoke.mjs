@@ -45,18 +45,14 @@ function startServer() {
     env: {
       ...process.env,
       PORT: String(API_PORT),
+      E2E_SPAWN_PORT: String(API_PORT),
       DEPLOYMENT_ENV: "dev-local",
       SOURCE_ROUTING_MODE: "remote_only",
       PLAN_LOG_REQUESTS: "false",
       /** Multi-leg + candidates can exceed default 120s on cold NREL/Valhalla. */
       PLAN_TOTAL_TIMEOUT_MS: process.env.PLAN_TOTAL_TIMEOUT_MS ?? "240000"
     },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-
-  proc.stderr.on("data", (d) => {
-    // eslint-disable-next-line no-console
-    console.error(String(d).trim());
+    stdio: ["ignore", "inherit", "inherit"]
   });
 
   return proc;

@@ -45,7 +45,10 @@ async function waitForHealth({ timeoutMs = 60000 } = {}) {
     }
     await sleepMs(300);
   }
-  throw new Error(`Timed out waiting for ${API_BASE}/health`);
+  throw new Error(
+    `Timed out waiting for ${API_BASE}/health (spawned API). Ensure nothing else is bound to port ${API_PORT}, ` +
+      `or set API_PORT to a free port. If the server exited, check the log lines above (e.g. EADDRINUSE, missing NREL_API_KEY).`
+  );
 }
 
 async function runOptionsPreflight({ path, origin, timeoutMs = 5000 }) {
@@ -90,18 +93,14 @@ function startServer({ overrides }) {
     env: {
       ...process.env,
       PORT: String(API_PORT),
+      E2E_SPAWN_PORT: String(API_PORT),
       ...overrides
     },
-    stdio: ["ignore", "pipe", "pipe"]
+    // Inherit stdout/stderr: piping without draining stdout can deadlock the child on Windows
+    // once the pipe buffer fills (server logs to stdout).
+    stdio: ["ignore", "inherit", "inherit"]
   });
 
-  // Keep stderr visible in case of server boot errors.
-  proc.stderr.on("data", (d) => {
-    // eslint-disable-next-line no-console
-    console.error(String(d).trim());
-  });
-
-  // Warm-up health check.
   return proc;
 }
 

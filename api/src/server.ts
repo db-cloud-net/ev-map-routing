@@ -41,12 +41,47 @@ function findEnvFilePath(): string | undefined {
   return undefined;
 }
 
+/**
+ * Smoke / E2E scripts spawn the API with `PORT=<ephemeral>` and scenario vars (`DEPLOYMENT_ENV`, `CORS_ORIGIN`, …).
+ * Repo `.env` often sets `PORT=3001` and `DEPLOYMENT_ENV=dev-local`; `dotenv.config({ override: true })` would
+ * overwrite those and break health checks + CORS scenarios. Parent sets `E2E_SPAWN_PORT` (same as `PORT`);
+ * we snapshot spawn-controlled keys **before** dotenv and restore them after.
+ */
+const e2eSpawnPortLock = process.env.E2E_SPAWN_PORT?.trim();
+const e2eKeysToRestore = [
+  "PORT",
+  "DEPLOYMENT_ENV",
+  "CORS_ORIGIN",
+  "SOURCE_ROUTING_MODE",
+  "PLAN_LOG_REQUESTS",
+  "PLAN_TOTAL_TIMEOUT_MS",
+  "MIRROR_ROOT",
+  "SOURCE_ROUTING_MODE_FORCE"
+] as const;
+const e2eEnvSnapshot: Partial<Record<(typeof e2eKeysToRestore)[number], string>> = {};
+if (e2eSpawnPortLock && /^\d+$/.test(e2eSpawnPortLock)) {
+  for (const k of e2eKeysToRestore) {
+    const v = process.env[k];
+    if (v !== undefined) e2eEnvSnapshot[k] = v;
+  }
+}
+
 const envPath = findEnvFilePath();
 if (envPath) {
   // Prefer values from the file when the shell has stale/empty vars (e.g. NREL_API_KEY="").
   dotenv.config({ path: envPath, override: true });
 } else {
   dotenv.config();
+}
+
+if (e2eSpawnPortLock && /^\d+$/.test(e2eSpawnPortLock)) {
+  const p = Number(e2eSpawnPortLock);
+  if (p >= 1 && p <= 65535) {
+    for (const [k, v] of Object.entries(e2eEnvSnapshot)) {
+      process.env[k] = v;
+    }
+    process.env.PORT = e2eSpawnPortLock;
+  }
 }
 
 const deploymentEnv = (process.env.DEPLOYMENT_ENV ?? "dev-local").trim().toLowerCase();

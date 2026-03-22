@@ -57,6 +57,7 @@ function startServer() {
     env: {
       ...process.env,
       PORT: String(API_PORT),
+      E2E_SPAWN_PORT: String(API_PORT),
       DEPLOYMENT_ENV: expectedDeploymentEnv,
       SOURCE_ROUTING_MODE: "remote_only",
       PLAN_LOG_REQUESTS: "true"

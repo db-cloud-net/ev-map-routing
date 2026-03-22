@@ -100,7 +100,8 @@ async function startServerWithOverrides(overrides) {
   const env = {
     ...process.env,
     ...overrides,
-    PORT: String(API_PORT)
+    PORT: String(API_PORT),
+    E2E_SPAWN_PORT: String(API_PORT)
   };
 
   killListenersOnPort(API_PORT, { verbose: process.env.E2E_VERBOSE === "1" });
