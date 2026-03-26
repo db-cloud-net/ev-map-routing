@@ -9,6 +9,23 @@ import { planTripOneLegLockedChargerChain } from "./planTripOneLegLocked";
 import { haversineMiles } from "./geo";
 import { resolvePlanProviders, sourceRoutingDebugFromMeta } from "../sourceRouter";
 import { fetchCorridorChargersForLeg } from "./corridorCandidates";
+import { computeRangeLegs } from "./rangeLegs";
+import { appendPoiCorridorReviewLine } from "../services/poiReviewLog";
+import type { PoiServicesPoi } from "../services/poiServicesTypes";
+
+function filterHotelsNear(
+  coords: LatLng,
+  hotels: CanonicalPoiHotel[],
+  radiusMeters: number
+): CanonicalPoiHotel[] {
+  return hotels.filter((h) => haversineMiles(coords, h.coords) * 1609.34 <= radiusMeters);
+}
+
+/** Fired when a `debug.segmentsAttempted` row is finalized (incremental trust / plan jobs). */
+export type OnSolverAttempt = (ev: {
+  legIndex: number;
+  attempt: Record<string, unknown>;
+}) => void;
 
 export type PlanTripOneLegInput = {
   requestId: string;
@@ -28,11 +45,19 @@ export type PlanTripOneLegInput = {
   lockedChargerIdsOrdered?: string[];
   /** Prefer this Overpass hotel id when inserting an overnight sleep stop. */
   lockedHotelId?: string;
+  onSolverAttempt?: OnSolverAttempt;
 };
 
 export async function planTripOneLegFromCoords(
   input: PlanTripOneLegInput
 ): Promise<PlanTripResponse> {
+  const notifySolverAttempt = (attempt: Record<string, unknown>) => {
+    input.onSolverAttempt?.({
+      legIndex: input.legIndex ?? 0,
+      attempt: JSON.parse(JSON.stringify(attempt)) as Record<string, unknown>
+    });
+  };
+
   const debug: Record<string, unknown> = {
     segmentsAttempted: [],
     overnightAnchors: [] as Array<{
@@ -120,6 +145,7 @@ export async function planTripOneLegFromCoords(
         responseVersion: input.responseVersion,
         status: "error",
         message: corridor.message,
+        ...(corridor.errorCode ? { errorCode: corridor.errorCode } : {}),
         debug: { ...debug, ...corridor.debug },
         stops: [],
         legs: [],
@@ -136,8 +162,16 @@ export async function planTripOneLegFromCoords(
     debug.chargersFoundTotal = corridor.debug.chargersFoundTotal;
     debug.corridorSampling = corridor.debug.corridorSampling;
 
+    const corridorUsedPoi = corridor.usedPoiServices === true;
+    const poiHotelsForOvernight = corridor.poiCorridorHotels;
+    const pairChargerByHotelId = corridor.pairChargerByHotelId ?? {};
+    const poiCorridorHotelPois = corridor.poiCorridorHotelPois;
+    const poiDcfcByPoiIntId = corridor.poiDcfcByPoiIntId;
+
     const chargers = corridor.chargers;
     const candidatesForResponse = corridor.candidatesForResponse;
+    const precomputedEdgeTravelMinutes = corridor.precomputedEdgeTravelMinutes;
+    const precomputedEdgeDistanceMiles = corridor.precomputedEdgeDistanceMiles;
 
     // Important: NREL results are not guaranteed to be sorted by distance.
     // We will pick the nearest candidates per segment below.
@@ -288,7 +322,10 @@ export async function planTripOneLegFromCoords(
         batteryKwh,
         overnightThresholdMinutes,
         candidatesForResponse,
-        legIndex: input.legIndex
+        legIndex: input.legIndex,
+        onSolverAttempt: input.onSolverAttempt,
+        precomputedEdgeTravelMinutes,
+        precomputedEdgeDistanceMiles
       });
     }
 
@@ -300,6 +337,23 @@ export async function planTripOneLegFromCoords(
     let sleepTimeMinutesTotal = 0;
     let overnightStopsCount = 0;
     let lastHotelMessage: string | undefined;
+
+    /** Incremental trust: emit route + presentation `rangeLegs` for planJob poll / future streaming. */
+    const emitPartialRouteSnapshot = (reason: string) => {
+      if (!input.onSolverAttempt) return;
+      if (overallStops.length < 2) return;
+      if (overallLegs.length !== overallStops.length - 1) return;
+      const rangeLegs = computeRangeLegs({ stops: overallStops, legs: overallLegs });
+      notifySolverAttempt({
+        kind: "partial_route",
+        reason,
+        partialSnapshot: {
+          stops: JSON.parse(JSON.stringify(overallStops)),
+          legs: JSON.parse(JSON.stringify(overallLegs)),
+          rangeLegs
+        }
+      });
+    };
 
     let currentStart = { id: input.segmentStartId, coords: startCoords };
 
@@ -424,21 +478,34 @@ export async function planTripOneLegFromCoords(
           chargers: chargersForSegmentCapped,
           rangeMiles,
           bufferSoc,
-          batteryKwh
+          batteryKwh,
+          precomputedEdgeTravelMinutes,
+          precomputedEdgeDistanceMiles
         });
       } catch (e) {
+        segmentAttempt.solverStatus = "error";
         segmentAttempt.errorMessage = e instanceof Error ? e.message : String(e);
         if (e instanceof NoFeasibleItineraryError) {
           segmentAttempt.solverDebug = e.debug;
         }
+        notifySolverAttempt(segmentAttempt);
         throw e;
       }
 
+      segmentAttempt.solverStatus = "ok";
+      segmentAttempt.totalTimeMinutes = segment.totalTimeMinutes;
+      segmentAttempt.stopsCount = segment.stops.length;
+      segmentAttempt.chargeStopsCount = segment.stops.filter((s) => s.type === "charge").length;
+      segmentAttempt.legsCount = segment.legs.length;
+
       // No overnight needed.
       if (segment.totalTimeMinutes <= overnightThresholdMinutes) {
+        segmentAttempt.outcome = "complete_under_overnight_threshold";
+        notifySolverAttempt(segmentAttempt);
         const stopsToAppend = overallStops.length === 0 ? segment.stops : segment.stops.slice(1);
         overallStops = overallStops.concat(stopsToAppend);
         overallLegs = overallLegs.concat(segment.legs);
+        emitPartialRouteSnapshot("segment_under_overnight_threshold");
         logEvent("overnight_check", {
           overnightNeeded: false,
           segmentTotalTimeMinutes: segment.totalTimeMinutes,
@@ -446,6 +513,9 @@ export async function planTripOneLegFromCoords(
         });
         break;
       }
+
+      segmentAttempt.outcome = "exceeds_overnight_threshold";
+      notifySolverAttempt(segmentAttempt);
 
       // Overnight needed: pick an anchor charger where cumulative time crosses the threshold.
       const chargeStops = segment.stops
@@ -498,7 +568,12 @@ export async function planTripOneLegFromCoords(
       for (const cand of chargeCandidates.slice(0, anchorCandidateLimit)) {
         const cacheKey = String(cand.s.id);
         let hotels: CanonicalPoiHotel[] = [];
-        if (hotelCache.has(cacheKey)) {
+        if (corridorUsedPoi) {
+          hotels = poiHotelsForOvernight?.length
+            ? filterHotelsNear(cand.s.coords, poiHotelsForOvernight, overnightHotelRadiusMeters)
+            : [];
+          hotelCache.set(cacheKey, hotels);
+        } else if (hotelCache.has(cacheKey)) {
           hotels = hotelCache.get(cacheKey) ?? [];
         } else {
           try {
@@ -570,9 +645,11 @@ export async function planTripOneLegFromCoords(
       }
 
       if (anchorIndex < 0) {
+        segmentAttempt.outcome = "complete_no_overnight_anchor";
         const stopsToAppend = overallStops.length === 0 ? segment.stops : segment.stops.slice(1);
         overallStops = overallStops.concat(stopsToAppend);
         overallLegs = overallLegs.concat(segment.legs);
+        emitPartialRouteSnapshot("no_overnight_anchor");
         logEvent("overnight_anchor_not_found", {
           overnightIndex,
           chargeStopsCount: chargeStops.length,
@@ -605,7 +682,12 @@ export async function planTripOneLegFromCoords(
         for (const c of endByProximity.slice(0, fallbackLimit)) {
           const cacheKey = String(c.id ?? `${c.coords.lat}:${c.coords.lon}`);
           let hotels: CanonicalPoiHotel[] = [];
-          if (hotelCache.has(cacheKey)) {
+          if (corridorUsedPoi) {
+            hotels = poiHotelsForOvernight?.length
+              ? filterHotelsNear(c.coords, poiHotelsForOvernight, overnightHotelRadiusMeters)
+              : [];
+            hotelCache.set(cacheKey, hotels);
+          } else if (hotelCache.has(cacheKey)) {
             hotels = hotelCache.get(cacheKey) ?? [];
           } else {
             try {
@@ -661,7 +743,9 @@ export async function planTripOneLegFromCoords(
               chargers: chargersForSegmentCapped,
               rangeMiles,
               bufferSoc,
-              batteryKwh
+              batteryKwh,
+              precomputedEdgeTravelMinutes,
+              precomputedEdgeDistanceMiles
             });
           } catch {
             fallbackSegment = null;
@@ -698,9 +782,11 @@ export async function planTripOneLegFromCoords(
         overallStops = overallStops.concat(truncatedStops.slice(1));
         overallLegs = overallLegs.concat(truncatedLegs);
       }
+      emitPartialRouteSnapshot("overnight_truncated");
 
       // Sleep block: find Holiday Inn Express within HOTEL_RADIUS_METERS of anchor charger.
       let sleepStop: { id: string; name: string; coords: LatLng; etaMinutesFromStart: number } | null = null;
+      let sleepHotelForPairs: CanonicalPoiHotel | null = null;
       const anchorEta = anchorStop.etaMinutesFromStart ?? 0;
       if (resolvedSelectedHotel) {
         if (
@@ -731,12 +817,18 @@ export async function planTripOneLegFromCoords(
           coords: resolvedSelectedHotel.coords,
           etaMinutesFromStart: anchorEta
         };
+        sleepHotelForPairs = resolvedSelectedHotel;
       } else {
         // No hotel found during anchor evaluation; fall back to one last check on the chosen anchor.
         try {
           const cacheKey = String(anchorStop.id);
           let hotels: CanonicalPoiHotel[] = [];
-          if (hotelCache.has(cacheKey)) {
+          if (corridorUsedPoi) {
+            hotels = poiHotelsForOvernight?.length
+              ? filterHotelsNear(anchorStop.coords, poiHotelsForOvernight, overnightHotelRadiusMeters)
+              : [];
+            hotelCache.set(cacheKey, hotels);
+          } else if (hotelCache.has(cacheKey)) {
             hotels = hotelCache.get(cacheKey) ?? [];
           } else {
             const overpassHotelsT0 = Date.now();
@@ -781,6 +873,7 @@ export async function planTripOneLegFromCoords(
                 coords: exact.coords,
                 etaMinutesFromStart: anchorEta
               };
+              sleepHotelForPairs = exact;
             } else {
               let best = hotels[0];
               let bestD = Infinity;
@@ -801,6 +894,7 @@ export async function planTripOneLegFromCoords(
                 coords: best.coords,
                 etaMinutesFromStart: anchorEta
               };
+              sleepHotelForPairs = best;
             }
           }
         } catch {
@@ -848,62 +942,243 @@ export async function planTripOneLegFromCoords(
             chargerMaxPowerKw?: number;
             chargerLat?: number;
             chargerLon?: number;
+            /** Optional UX/debug label for how the sleep stop got its “nearby DCFC”. */
+            sleepChargerSource?: string;
           }
         | undefined = undefined;
       if (sleepStop) {
-        const chargerRadiusMiles = hotelRadiusMeters / 1609.34;
-        const cacheKey = `${sleepStop.coords.lat.toFixed(4)}:${sleepStop.coords.lon.toFixed(4)}`;
+        const poiHotelPrefix = "poi_services:hotel:";
 
-        try {
-          let chargersAtHotel = hotelChargerCache.get(cacheKey);
-          if (!chargersAtHotel) {
-            const metaFetchT0 = Date.now();
-            const chargerMode: ChargerPointMode = includeAllElectricChargers
-              ? "electric_all"
-              : "dc_fast";
-            const fetched: CanonicalCharger[] =
-              (await chargersProvider.findChargersNearPoint(
-                sleepStop.coords,
-                chargerRadiusMiles,
-                chargerMode,
-                { requestId: input.requestId }
-              )) ?? [];
-            chargersAtHotel = fetched;
-            logEvent("provider_nrel_hotel_chargers", {
-              durationMs: Date.now() - metaFetchT0,
-              chargerSearchMode: includeAllElectricChargers ? "electric-all" : "dc-fast",
-              chargersFoundTotal: fetched.length
-            });
-            hotelChargerCache.set(cacheKey, fetched);
+        if (
+          corridorUsedPoi &&
+          typeof sleepHotelForPairs?.id === "string" &&
+          sleepHotelForPairs.id.startsWith(poiHotelPrefix)
+        ) {
+          let resolvedVia: "poi_hotel_join" | "poi_pairs" | "live_nrel" | "none" = "none";
+
+          const hotelPoiIdCandidate = Number(
+            sleepHotelForPairs.id.slice(poiHotelPrefix.length)
+          );
+          const hotelPoiId = Number.isFinite(hotelPoiIdCandidate)
+            ? hotelPoiIdCandidate
+            : undefined;
+
+          const hotelPoiRow: PoiServicesPoi | undefined =
+            hotelPoiId != null ? poiCorridorHotelPois?.find((h) => h.id === hotelPoiId) : undefined;
+
+          let nearbyDcfcId = hotelPoiRow?.nearby_dcfc_id ?? 0;
+          let nearbyDcfcDistanceYd = hotelPoiRow?.nearby_dcfc_distance_yd ?? 0;
+
+          // Join: resolve `nearby_dcfc_id` via corridor charger pool (dcfc int id -> canonical).
+          if (hotelPoiRow) {
+            if (nearbyDcfcId > 0) {
+              const canon = poiDcfcByPoiIntId?.get(nearbyDcfcId);
+              if (canon) {
+                sleepChargerMeta = {
+                  chargerFound: true,
+                  chargerId: String(canon.id),
+                  chargerName: canon.name,
+                  chargerMaxPowerKw: canon.maxPowerKw,
+                  chargerLat: canon.coords.lat,
+                  chargerLon: canon.coords.lon,
+                  sleepChargerSource: "poi_hotel_dcfc"
+                };
+                resolvedVia = "poi_hotel_join";
+              } else {
+                appendPoiCorridorReviewLine({
+                  event: "sleep_dcfc_corridor_miss",
+                  requestId: input.requestId,
+                  legIndex: input.legIndex ?? 0,
+                  hotelPoiId,
+                  nearbyDcfcId,
+                  nearbyDcfcDistanceYd,
+                  note: "nearby_dcfc_id not in corridor charger pool"
+                });
+              }
+            } else {
+              appendPoiCorridorReviewLine({
+                event: "sleep_hotel_no_poi_dcfc",
+                requestId: input.requestId,
+                legIndex: input.legIndex ?? 0,
+                hotelPoiId,
+                nearbyDcfcId,
+                nearbyDcfcDistanceYd,
+                note: "nearby_dcfc_id <= 0"
+              });
+            }
           }
 
-          const chargersNearHotel = chargersAtHotel ?? [];
-          if (chargersNearHotel.length) {
-            // Choose the closest charger to the hotel coords.
-            let best = chargersNearHotel[0];
-            let bestD = Infinity;
-            for (const c of chargersNearHotel) {
-              const d = haversineMiles(sleepStop.coords, c.coords);
-              if (d < bestD) {
-                bestD = d;
-                best = c;
+          // Fallback chain when POI join didn't resolve: pairs, then live NREL.
+          if (!sleepChargerMeta?.chargerFound) {
+            const paired =
+              sleepHotelForPairs?.id && pairChargerByHotelId[sleepHotelForPairs.id]
+                ? pairChargerByHotelId[sleepHotelForPairs.id]
+                : undefined;
+
+            if (paired) {
+              sleepChargerMeta = {
+                chargerFound: true,
+                chargerId: String(paired.id),
+                chargerName: paired.name,
+                chargerMaxPowerKw: paired.maxPowerKw,
+                chargerLat: paired.coords.lat,
+                chargerLon: paired.coords.lon,
+                sleepChargerSource: "poi_pairs"
+              };
+              resolvedVia = "poi_pairs";
+            } else {
+              const chargerRadiusMiles = hotelRadiusMeters / 1609.34;
+              const cacheKey = `${sleepStop.coords.lat.toFixed(4)}:${sleepStop.coords.lon.toFixed(4)}`;
+
+              try {
+                let chargersAtHotel = hotelChargerCache.get(cacheKey);
+                if (!chargersAtHotel) {
+                  const metaFetchT0 = Date.now();
+                  const chargerMode: ChargerPointMode = includeAllElectricChargers
+                    ? "electric_all"
+                    : "dc_fast";
+                  const fetched: CanonicalCharger[] =
+                    (await chargersProvider.findChargersNearPoint(
+                      sleepStop.coords,
+                      chargerRadiusMiles,
+                      chargerMode,
+                      { requestId: input.requestId }
+                    )) ?? [];
+                  chargersAtHotel = fetched;
+                  logEvent("provider_nrel_hotel_chargers", {
+                    durationMs: Date.now() - metaFetchT0,
+                    chargerSearchMode: includeAllElectricChargers ? "electric-all" : "dc-fast",
+                    chargersFoundTotal: fetched.length
+                  });
+                  hotelChargerCache.set(cacheKey, fetched);
+                }
+
+                const chargersNearHotel = chargersAtHotel ?? [];
+                if (chargersNearHotel.length) {
+                  // Choose the closest charger to the hotel coords.
+                  let best = chargersNearHotel[0];
+                  let bestD = Infinity;
+                  for (const c of chargersNearHotel) {
+                    const d = haversineMiles(sleepStop.coords, c.coords);
+                    if (d < bestD) {
+                      bestD = d;
+                      best = c;
+                    }
+                  }
+
+                  sleepChargerMeta = {
+                    chargerFound: true,
+                    chargerId: String(best.id),
+                    chargerName: best.name,
+                    chargerMaxPowerKw: best.maxPowerKw,
+                    chargerLat: best.coords.lat,
+                    chargerLon: best.coords.lon,
+                    sleepChargerSource: "live"
+                  };
+                  resolvedVia = "live_nrel";
+
+                  appendPoiCorridorReviewLine({
+                    event: "sleep_charger_live_nrel",
+                    resolvedVia: "live",
+                    requestId: input.requestId,
+                    legIndex: input.legIndex ?? 0,
+                    hotelPoiId,
+                    nearbyDcfcId,
+                    nearbyDcfcDistanceYd,
+                    resolvedChargerId: String(best.id),
+                    note: "found via live NREL near hotel"
+                  });
+                } else {
+                  sleepChargerMeta = { chargerFound: false };
+                }
+              } catch {
+                // Overpass/NREL failures degrade to sleep-without-charger.
+                sleepChargerMeta = { chargerFound: false };
               }
             }
+          }
 
+          // Single summary line per resolution outcome (for POI data QA).
+          appendPoiCorridorReviewLine({
+            event: "sleep_charger_resolution_summary",
+            requestId: input.requestId,
+            legIndex: input.legIndex ?? 0,
+            hotelPoiId,
+            nearbyDcfcId,
+            nearbyDcfcDistanceYd,
+            resolvedVia
+          });
+        } else {
+          const paired =
+            sleepHotelForPairs?.id && pairChargerByHotelId[sleepHotelForPairs.id]
+              ? pairChargerByHotelId[sleepHotelForPairs.id]
+              : undefined;
+
+          if (paired) {
             sleepChargerMeta = {
               chargerFound: true,
-              chargerId: String(best.id),
-              chargerName: best.name,
-              chargerMaxPowerKw: best.maxPowerKw,
-              chargerLat: best.coords.lat,
-              chargerLon: best.coords.lon
+              chargerId: String(paired.id),
+              chargerName: paired.name,
+              chargerMaxPowerKw: paired.maxPowerKw,
+              chargerLat: paired.coords.lat,
+              chargerLon: paired.coords.lon
             };
           } else {
-            sleepChargerMeta = { chargerFound: false };
+            const chargerRadiusMiles = hotelRadiusMeters / 1609.34;
+            const cacheKey = `${sleepStop.coords.lat.toFixed(4)}:${sleepStop.coords.lon.toFixed(4)}`;
+
+            try {
+              let chargersAtHotel = hotelChargerCache.get(cacheKey);
+              if (!chargersAtHotel) {
+                const metaFetchT0 = Date.now();
+                const chargerMode: ChargerPointMode = includeAllElectricChargers
+                  ? "electric_all"
+                  : "dc_fast";
+                const fetched: CanonicalCharger[] =
+                  (await chargersProvider.findChargersNearPoint(
+                    sleepStop.coords,
+                    chargerRadiusMiles,
+                    chargerMode,
+                    { requestId: input.requestId }
+                  )) ?? [];
+                chargersAtHotel = fetched;
+                logEvent("provider_nrel_hotel_chargers", {
+                  durationMs: Date.now() - metaFetchT0,
+                  chargerSearchMode: includeAllElectricChargers ? "electric-all" : "dc-fast",
+                  chargersFoundTotal: fetched.length
+                });
+                hotelChargerCache.set(cacheKey, fetched);
+              }
+
+              const chargersNearHotel = chargersAtHotel ?? [];
+              if (chargersNearHotel.length) {
+                // Choose the closest charger to the hotel coords.
+                let best = chargersNearHotel[0];
+                let bestD = Infinity;
+                for (const c of chargersNearHotel) {
+                  const d = haversineMiles(sleepStop.coords, c.coords);
+                  if (d < bestD) {
+                    bestD = d;
+                    best = c;
+                  }
+                }
+
+                sleepChargerMeta = {
+                  chargerFound: true,
+                  chargerId: String(best.id),
+                  chargerName: best.name,
+                  chargerMaxPowerKw: best.maxPowerKw,
+                  chargerLat: best.coords.lat,
+                  chargerLon: best.coords.lon
+                };
+              } else {
+                sleepChargerMeta = { chargerFound: false };
+              }
+            } catch {
+              // Overpass/NREL failures degrade to sleep-without-charger.
+              sleepChargerMeta = { chargerFound: false };
+            }
           }
-        } catch {
-          // Overpass/NREL failures degrade to sleep-without-charger.
-          sleepChargerMeta = { chargerFound: false };
         }
       }
 
@@ -936,6 +1211,7 @@ export async function planTripOneLegFromCoords(
           travelTimeMinutes: 0,
           chargeTimeMinutes: undefined
         });
+        emitPartialRouteSnapshot("after_sleep_connector");
 
         currentStart = { id: sleepStop.id, coords: sleepStop.coords };
         lastHotelMessage = undefined;
@@ -964,20 +1240,49 @@ export async function planTripOneLegFromCoords(
           ? chargerCandidates
           : chargerCandidates.filter((c: any) => c.id !== currentStart.id);
 
-      const remainder = await planLeastTimeSegment({
-        requestId: input.requestId,
-        segmentStart: { id: currentStart.id, type: "start", coords: currentStart.coords },
-        segmentEnd: finalEnd,
-        chargers: chargersForRemainder,
-        rangeMiles,
-        bufferSoc,
-        batteryKwh
-      });
+      const remainderAttempt: Record<string, unknown> = {
+        kind: "remainder",
+        segmentStartId: currentStart.id,
+        chargersPoolCount: chargersForRemainder.length
+      };
+      (debug.segmentsAttempted as Array<Record<string, unknown>>).push(remainderAttempt);
+
+      let remainder;
+      try {
+        remainder = await planLeastTimeSegment({
+          requestId: input.requestId,
+          segmentStart: { id: currentStart.id, type: "start", coords: currentStart.coords },
+          segmentEnd: finalEnd,
+          chargers: chargersForRemainder,
+          rangeMiles,
+          bufferSoc,
+          batteryKwh,
+          precomputedEdgeTravelMinutes,
+          precomputedEdgeDistanceMiles
+        });
+      } catch (e) {
+        remainderAttempt.solverStatus = "error";
+        remainderAttempt.errorMessage = e instanceof Error ? e.message : String(e);
+        if (e instanceof NoFeasibleItineraryError) {
+          remainderAttempt.solverDebug = e.debug;
+        }
+        notifySolverAttempt(remainderAttempt);
+        throw e;
+      }
+
+      remainderAttempt.solverStatus = "ok";
+      remainderAttempt.outcome = "remainder_to_end";
+      remainderAttempt.totalTimeMinutes = remainder.totalTimeMinutes;
+      remainderAttempt.stopsCount = remainder.stops.length;
+      remainderAttempt.chargeStopsCount = remainder.stops.filter((s) => s.type === "charge").length;
+      remainderAttempt.legsCount = remainder.legs.length;
+      notifySolverAttempt(remainderAttempt);
 
       const stopsToAppend =
         overallStops.length === 0 ? remainder.stops : remainder.stops.slice(1);
       overallStops = overallStops.concat(stopsToAppend);
       overallLegs = overallLegs.concat(remainder.legs);
+      emitPartialRouteSnapshot("remainder_to_end");
     }
 
     const travelTimeMinutes = overallLegs.reduce(
@@ -1008,13 +1313,24 @@ export async function planTripOneLegFromCoords(
       debug
     };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Planner failed";
+    let msg = e instanceof Error ? e.message : "Planner failed";
+    let mergedDebug: Record<string, unknown> = debug;
+
+    if (e instanceof NoFeasibleItineraryError) {
+      const d = e.debug;
+      mergedDebug = { ...debug, noFeasibleItinerary: d };
+      const detail = typeof d.message === "string" ? d.message.trim() : "";
+      if (detail) {
+        msg = `${msg} — ${detail}`;
+      }
+    }
+
     return {
       requestId: input.requestId,
       responseVersion: input.responseVersion,
       status: "error",
       message: msg,
-      debug,
+      debug: mergedDebug,
       stops: [],
       legs: [],
       totals: {

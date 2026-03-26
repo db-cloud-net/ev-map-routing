@@ -55,3 +55,35 @@ Optional:
 
 4. On NAS deploy copies, `env_file` may use an **absolute path** (`/volume1/docker/Travel-Routing/.env`) so Synology never resolves `.env` relative to the wrong working directory.
 
+### Synology NAS: POI Services on `prod-network` (port 8010)
+
+When the **POI Services** stack runs as a container on the same user-defined network as **`planner-api`** (e.g. external **`prod-network`**), set:
+
+- **`POI_SERVICES_BASE_URL=http://poi:8010`** — Docker DNS resolves the **`poi`** service name; **8010** is the port the POI API listens on inside that network (match your Compose service `ports` / `expose`).
+
+From the host (not inside a container), use `localhost` only if port 8010 is published to the host; from **`planner-api`**, prefer **`http://poi:8010`**. Confirm with:
+
+- `docker exec -it <planner-api-container> wget -qO- http://poi:8010/health` (or `curl` if installed)
+
+If `/plan` never hits POI, verify **`USE_POI_SERVICES_CORRIDOR`** is not `false` and check **`debug.providerCalls.poi_services`** on a successful response.
+
+#### Validating hotel ↔ DCFC proximity in shards (offline)
+
+The POI Services repo ships **`experiments/proximity_sweep.py`**, which scans **`/data/shards`** (SQLite) directly — no HTTP. Example (from repo root, with the same **`poi_data`** volume you use for builds):
+
+```bash
+docker run --rm \
+  -v "$(pwd)/poi_data:/data" \
+  -v "$(pwd)/experiments:/app/experiments" \
+  poi-updater \
+  python /app/experiments/proximity_sweep.py /data/shards
+```
+
+Example output shape (full US HIE + DCFC corpus): **~2237 hotels**, **~15075 chargers**, then cumulative **hotels with a nearest DCFC within** each yard threshold — e.g. **67 @ 100 yd**, **135 @ 200 yd**, … **1338 @ 2640 yd** (~59.8% of hotels), plus histogram and top closest / most isolated pairs.
+
+Use this when **`GET /health`** shows large **`total_*`** counts but **`GET /pois`** / **`GET /pois/hotel-charger-pairs`** / **`POST /corridor/query`** return **empty** results: the **runtime API container** must mount the **same** populated **`/data/shards/*.db`** (and **`manifest.json`**) as **`DATA_DIR`** (default **`/data`**). **`/health`** reads **`manifest.json`** only; spatial endpoints open the SQLite files. If the mount is missing or points at an empty directory, health can still look “healthy” while every query returns **zero rows**.
+
+**HTTP regression check (hotels + DCFC + L2 by `power_kw`):** from Travel-Routing repo, `POI_SERVICES_BASE_URL=http://poi:8010` (or your NAS host:port) — **`node scripts/poi-container-data-validation.mjs`**. Exit **0** when spatial data returns; **2** when manifest claims data but `/pois` is empty (mount issue).
+
+**Planner-side POI review log (periodic data QA):** when the planner runs with **`POI_REVIEW_LOG=true`**, it writes NDJSON review lines (default **`logs/poi-corridor-review.ndjson`**) for events such as **`sleep_dcfc_corridor_miss`** and resolution outcomes. Summarize with **`node scripts/poi-review-log-summary.mjs`** after POI shard refreshes to spot coverage drift quickly.
+

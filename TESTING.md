@@ -63,17 +63,16 @@ For non-secret QA defaults, prefer documenting them in this file and/or using th
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `PLAN_TOTAL_TIMEOUT_MS` | `120000` | API: hard cap on `planTrip` wall time; responds with HTTP **408** + `debug.reason: planner_timeout` when exceeded |
-| `NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS` | `130000` | Web: **`fetch` abort on `POST /plan` only** (not on `/candidates` or `/route-preview`). Raise for long trips (e.g. `300000`). Must be **≥ `PLAN_TOTAL_TIMEOUT_MS` + slack** or the client will cancel before the API finishes. |
-| `NEXT_PUBLIC_ROUTE_PREVIEW_CLIENT_TIMEOUT_MS` | `180000` | Web: abort budget for **merged** `POST /route-preview` fetches so `routePreviewPending` cannot stick forever (which would hide the blue line and chord fallback). |
-| `NEXT_PUBLIC_PREFETCH_CANDIDATES` | `true` | Web map: parallel **`POST /candidates`** (Slice 3) so charger/hotel pins can appear before **`POST /plan`** finishes; set **`false`** to rely on `/plan` + `includeCandidates` only |
-| `NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW` | `true` | Web map: parallel **`POST /route-preview`** (Slice 4) on **single-segment** trips (no waypoints, normal start) for teal dashed line + horizon turn list (**`preview.horizon`** + optional **`preview.nextHorizon`** second clip); set **`false`** to skip |
+| `PLAN_TOTAL_TIMEOUT_MS` | `300000` | API: hard cap on `planTrip` / candidates wall time; responds with HTTP **408** + `debug.reason: planner_timeout` when exceeded (default **5 min**; align with web client) |
+| **Web (`NEXT_PUBLIC_*`)** | — | **Full table:** **[`docs/WEB_SWITCHES.md`](docs/WEB_SWITCHES.md)** — set in **`web/.env.local`** (build-time). Includes **`NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS`**, prefetch toggles, **`NEXT_PUBLIC_PLAN_USE_JOB`**, optional **`NEXT_PUBLIC_API_BASE`**. Must align **`NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS`** ≥ **`PLAN_TOTAL_TIMEOUT_MS`** or the client cancels early — on abort **no** response body (including **`debug.providerCalls`**) is read. |
+
+**Async `planJob` QA:** With **`NEXT_PUBLIC_PLAN_USE_JOB=true`**, **`GET /plan/jobs/:id`** may emit **`attempt.kind === "partial_route"`** checkpoints (**`partialSnapshot`**: **`stops`**, **`legs`**, **`rangeLegs`**) so the map/itinerary **updates while `running`**; the final plan still arrives only in **`result`** when **`complete`**. Contract: **[`docs/V2_API.md`](docs/V2_API.md)** · **[`docs/MAP_AND_NAV.md`](docs/MAP_AND_NAV.md)**.
 
 **Charger + POI source routing (API / `planTrip`)** — see **[`docs/local-mirror-architecture.md`](docs/local-mirror-architecture.md)** §A4 and **[`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md)** §2.
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `SOURCE_ROUTING_MODE` | *(unset → `remote_only`)* | `remote_only` — live NREL + Overpass. `local_primary_fallback_remote` — mirror first, allow-listed fallback to remote. **`local_primary_fail_closed`** — mirror only (no silent remote switch; **ROUTING_UX_SPEC** fail-closed policy). `dual_read_compare` — dual-read compare path. Invalid values behave as **`remote_only`**. |
+| `SOURCE_ROUTING_MODE` | *(unset → `remote_only`)* | `remote_only` — live NREL + Overpass. `local_primary_fallback_remote` — mirror first, allow-listed fallback to remote; **also** if the mirror returns **zero** chargers for a corridor query, the API uses **NREL** so trips outside snapshot coverage still get DC-fast candidates. `dual_read_compare` — same **empty-mirror → NREL** behavior for chargers (compare logging still runs when both return). **`local_primary_fail_closed`** — mirror only (no NREL when mirror loads; use for strict offline tests). Invalid values behave as **`remote_only`**. |
 | `SOURCE_ROUTING_MODE_FORCE` | *(unset)* | Set to **`remote_only`** for emergency rollback (C3); see **`sourceRouter.ts`**. |
 
 **Per-stage `/plan` budgets (server-side)** — enforced inside `planTrip` / clients; tune if a stage dominates latency or hits upstream limits.
@@ -86,8 +85,16 @@ For non-secret QA defaults, prefer documenting them in this file and/or using th
 | `VALHALLA_BASE_URL` | `http://valhalla:8002` (code default) | Valhalla origin (port usually **8002**). See **[docs/VALHALLA.md](docs/VALHALLA.md)**. |
 | `NREL_FETCH_TIMEOUT_MS` | `60000` | Each NREL nearest-point / route request (`RemoteNrelAdapter`; passed as abort budget per call) |
 | `OVERPASS_FETCH_TIMEOUT_MS` | `60000` | Each Overpass hotel query (`RemoteOverpassAdapter`) |
+| `POI_SERVICES_BASE_URL` | *(unset)* | When set, corridor POI may use POI Services **`POST /corridor/query`** instead of NREL for DC-fast sampling (see **`.env.example`** for **`USE_POI_SERVICES_CORRIDOR`**, **`POI_SERVICES_USE_PAIRS`**, **`POI_SERVICES_FALLBACK_TO_NREL`** default **false**, **`POI_SERVICES_USE_EDGES`**). On Docker NAS (**`prod-network`**), use the service URL, e.g. **`http://poi:8010`** (see **`docs/d1-runbook.md`**). |
+| `POI_SERVICES_USE_PAIRS` | `true` | When POI corridor is enabled, request the **`pairs`** layer (hotel↔DCFC) unless set to **`false`**. |
+| `POI_SERVICES_FALLBACK_TO_NREL` | `false` | If **`true`**, fall back to NREL corridor sampling when POI fails or returns no chargers; default is fail-closed (**`POI_SERVICES_*`** errors). |
+| `POI_SERVICES_TIMEOUT_MS` | `30000` | HTTP budget for each **`/corridor/query`** call (`api/src/services/poiServicesClient.ts`). |
 
-**`debug.providerCalls` (MVP):** On successful and many error responses, `debug` includes **`providerCalls`** — per upstream **`valhalla`**, **`nrel`**, **`overpass`**, and **`geocode`** (Nominatim): **`calls`**, **`totalMs`**, **`avgMs`**, and **`durationsMs`** (per HTTP request; list truncated after 200 entries with a tail marker). Implemented in **`api/src/services/providerCallMetrics.ts`** and merged in **`api/src/server.ts`**.
+With `POI_REVIEW_LOG=true`, tail `logs/poi-corridor-review.ndjson` to review POI corridor sleep-stop join coverage (e.g. `sleep_dcfc_corridor_miss`), or run `node scripts/poi-review-log-summary.mjs` for event and `resolvedVia` rollups.
+
+**`debug.providerCalls` (MVP):** On successful and many error responses, `debug` includes **`providerCalls`** — per upstream **`valhalla`**, **`nrel`**, **`overpass`**, **`geocode`** (Nominatim), and (when configured) **`poi_services`**: **`calls`**, **`totalMs`**, **`avgMs`**, and **`durationsMs`** (per HTTP request; list truncated after 200 entries with a tail marker). Implemented in **`api/src/services/providerCallMetrics.ts`** and merged in **`api/src/server.ts`**.
+
+**Planner error: “No feasible itinerary for segment”** — the least-time segment solver could not chain **start → DC chargers → end** under the current **EV range / buffer** and **corridor charger pool** (common on **very long** legs or **sparse** NREL coverage). The API response **`message`** includes the feasibility model line (Valhalla road-distance vs haversine). Inspect **`debug.noFeasibleItinerary`** for **`chargerNodesCount`**, **`reachableEdgeCount`**, **`endWithinRangeCount`**, etc. Mitigations: raise **`EV_RANGE_MILES`** (or lower **`CHARGE_BUFFER_SOC`** slightly), increase corridor sampling (**`NREL_RADIUS_MILES`**, **`corridorMaxSamples`**, **`CANDIDATE_CHARGERS_CAP`** in **`api/src/planner/corridorCandidates.ts`** / env), ensure **NREL** returns enough DC-fast sites along the corridor, or **split** the trip with **waypoints** so each segment is shorter.
 
 **Planner stdout (when `PLAN_LOG_REQUESTS` is not `false`):** Corridor sampling logs **`provider_valhalla_polyline`** on success. If Valhalla’s `/route` fails, **`provider_valhalla_polyline_failed`** includes **`durationMs`** (real attempt time) and **`error`**; then **`provider_valhalla_polyline_fallback`** includes **`valhallaAttemptMs`** (same as failed attempt), **`fallbackBuildMs`** (local straight-line sampling only, usually under 1 ms), **`corridorSamplesUsed`**, and **`approxMiles`**. See **`api/src/planner/planTripOneLeg.ts`**.
 
@@ -343,6 +350,39 @@ Important:
 
 ---
 
+## 5.5) Multi-waypoint vs single-leg (why one works and the other fails)
+
+**Terminology:** Use **waypoint leg** for start→waypoint→end hops, **solver attempt** for each `debug.segmentsAttempted` row (overnight / least-time solve). **`rangeLegs`** on successful **`POST /plan`** = **presentation** grouping at charge boundaries (also **`debug.rangeLegs`**); a **true** range-optimizer remains future work. See **[`docs/designs/range-based-segments-intent.md`](docs/designs/range-based-segments-intent.md)**.
+
+**How waypoints are planned:** `planTripMultiLeg` (`api/src/planner/planTrip.ts`) runs **`planTripOneLegFromCoords` once per driving hop** — e.g. Start→WP1, then WP1→End — and **stops on the first failing leg** (returns that leg’s error; no merged success).
+
+**How that differs from “one route all at once”:** With **no** waypoints, **one** leg covers the **full** origin→destination. The corridor builder (`fetchCorridorChargersForLeg`) walks the **entire** Valhalla polyline (or chord fallback), samples it, unions NREL/mirror hits, then **`CANDIDATE_CHARGERS_CAP`** (default **25**) picks evenly spaced candidates along **progress** for **that** long corridor.
+
+**Why adding a waypoint can flip success→failure:**
+
+| Effect | Detail |
+|--------|--------|
+| **Separate pools** | Each sub-leg gets its **own** polyline, samples, and deduped charger set — then **each** is capped again (default 25). A charger that matters for connectivity might appear on the **full** trip’s union but be **dropped** on a **short** leg’s cap or **missing** if that leg’s corridor is sparse (mountains, rural DCFC gaps). |
+| **First failure wins** | If **any** hop returns `status: "error"` (no corridor chargers, **`NoFeasibleItineraryError`**, timeout, etc.), the **whole** multi-leg plan fails — you may see **no completed `segmentsAttempted`** in the response for legs that never ran. |
+| **Not battery chaining** | Each leg is solved with a **full battery** at that leg’s start (MVP). That **does not** make multi-leg **harder** than one long leg; if anything it’s **optimistic** per hop. Failures are usually **corridor + solver** on that hop, not SOC reset. |
+
+**Manual observations (reported QA):**
+
+- **Raleigh → Asheville → Lexington (KY):** failed (no segments / plan error).
+- **Raleigh → Lexington (no waypoint):** succeeded (single corridor + solver).
+- **Raleigh → St Louis:** succeeded (single leg).
+- **Raleigh → Nashville → St Louis:** failed.
+
+**What to inspect when a waypoint trip fails:**
+
+1. **Response JSON** — `debug.multiLeg`, `debug.legCount`, and **`debug.legs`** (array per leg). The **first** `undefined` or error-shaped leg aligns with the failing hop.
+2. **API message** — e.g. `"No EV charging stops for the trip"` (corridor empty), **No feasible itinerary** (solver), geocode/Valhalla errors.
+3. **Tune / env** — `CANDIDATE_CHARGERS_CAP`, `NREL_RADIUS_MILES`, `CORRIDOR_STEP_MILES`, `CORRIDOR_MAX_SAMPLE_POINTS`, Valhalla up (`VALHALLA_BASE_URL`), and mirror vs remote NREL (`SOURCE_ROUTING_MODE`).
+
+**Docs:** Corridor + cap + solver behavior — **`api/src/planner/corridorCandidates.ts`**, **`planTripOneLeg.ts`**, **`leastTimeSegment.ts`**.
+
+---
+
 ## 6) Notes on flakiness
 
 - NREL/Overpass requests can return empty sets or time out.
@@ -353,7 +393,7 @@ Important:
 If you see intermittent failures, rely on:
 
 - the functional runner output
-- the `/plan` `debug.segmentsAttempted` payload
+- the `/plan` `debug.segmentsAttempted` payload (on **`/map`**, **Debug (MVP)** also lists each segment attempt in a purple card; multi-leg plans show **Leg N (segment attempts)** from `debug.legs[]`)
 
 ---
 
