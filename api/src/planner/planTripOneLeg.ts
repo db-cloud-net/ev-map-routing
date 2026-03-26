@@ -21,6 +21,16 @@ function filterHotelsNear(
   return hotels.filter((h) => haversineMiles(coords, h.coords) * 1609.34 <= radiusMeters);
 }
 
+function reorderHotelsWithLockedFirst(
+  hotels: CanonicalPoiHotel[],
+  lockedHotelId: string | undefined
+): CanonicalPoiHotel[] {
+  if (!lockedHotelId) return hotels;
+  const idx = hotels.findIndex((h) => h.id === lockedHotelId);
+  if (idx <= 0) return hotels;
+  return [hotels[idx], ...hotels.slice(0, idx), ...hotels.slice(idx + 1)];
+}
+
 /** Fired when a `debug.segmentsAttempted` row is finalized (incremental trust / plan jobs). */
 export type OnSolverAttempt = (ev: {
   legIndex: number;
@@ -562,15 +572,24 @@ export async function planTripOneLegFromCoords(
       let anchorIndex = chargeCandidates.length ? chargeCandidates[0].idx : -1;
       let selectedHotel: CanonicalPoiHotel | null = null;
       let selectedBestD = Infinity;
+      let firstHotelChoice: CanonicalPoiHotel | null = null;
+      let firstHotelAnchorIndex = anchorIndex;
+      let fallbackSleepWithoutCharger = false;
+      const hotelSearchRadiusMeters = 40 * 1609.34; // 40 miles
+      const maxHotelChecks = 10;
+      const maxHotelDetourMinutes = 15;
 
-      // Prefer an overnight anchor charger that has a Holiday Inn Express within the
-      // MVP convenience radius. This makes the "charger -> near hotel" behavior more reliable.
+      // Hotel-first overnight selection:
+      // 1) collect nearby hotels around candidate anchor charger (40mi),
+      // 2) evaluate hotel->DCFC distance <= 400yd,
+      // 3) apply detour guardrail <= 15min (straight-line estimate),
+      // 4) pick first passing candidate (lockedHotelId searched first).
       for (const cand of chargeCandidates.slice(0, anchorCandidateLimit)) {
         const cacheKey = String(cand.s.id);
         let hotels: CanonicalPoiHotel[] = [];
         if (corridorUsedPoi) {
           hotels = poiHotelsForOvernight?.length
-            ? filterHotelsNear(cand.s.coords, poiHotelsForOvernight, overnightHotelRadiusMeters)
+            ? filterHotelsNear(cand.s.coords, poiHotelsForOvernight, hotelSearchRadiusMeters)
             : [];
           hotelCache.set(cacheKey, hotels);
         } else if (hotelCache.has(cacheKey)) {
@@ -580,7 +599,7 @@ export async function planTripOneLegFromCoords(
             const overpassHotelsT0 = Date.now();
             hotels = await poisProvider.findHolidayInnExpressHotelsNearPoint(
               cand.s.coords,
-              overnightHotelRadiusMeters,
+              hotelSearchRadiusMeters,
               { requestId: input.requestId }
             );
             logEvent("provider_overpass_hotels", {
@@ -594,6 +613,7 @@ export async function planTripOneLegFromCoords(
           }
           hotelCache.set(cacheKey, hotels);
         }
+        hotels = reorderHotelsWithLockedFirst(hotels, input.lockedHotelId);
         (debug.overnightAnchors as Array<{
           chargerId: string;
           chargerName: string;
@@ -608,43 +628,51 @@ export async function planTripOneLegFromCoords(
 
         if (!hotels.length) continue;
 
-        let best = hotels[0];
-        let bestD = Infinity;
-
-        if (input.lockedHotelId) {
-          const hit = hotels.find((h) => h.id === input.lockedHotelId);
-          if (!hit) continue;
-          best = hit;
-          bestD = 0;
-        } else {
-          // Choose the closest hotel to this anchor charger.
-          for (const h of hotels) {
-            const d =
-              Math.sqrt(
-                (h.coords.lat - cand.s.coords.lat) ** 2 +
-                  (h.coords.lon - cand.s.coords.lon) ** 2
-              );
-            if (d < bestD) {
-              bestD = d;
-              best = h;
-            }
-          }
+        if (!firstHotelChoice) {
+          firstHotelChoice = hotels[0] ?? null;
+          firstHotelAnchorIndex = cand.idx;
         }
 
-        if (!selectedHotel) {
-          selectedHotel = best;
-          anchorIndex = cand.idx;
-          selectedBestD = bestD;
-        } else {
-          if (bestD < selectedBestD) {
-            selectedHotel = best;
+        const toEvaluate = hotels.slice(0, maxHotelChecks);
+        for (const h of toEvaluate) {
+          // Approximate detour as charger->hotel->charger roundtrip at ~45 mph.
+          const dToHotelMiles = haversineMiles(cand.s.coords, h.coords);
+          const detourMinutes = ((dToHotelMiles * 2) / 45) * 60;
+          if (detourMinutes > maxHotelDetourMinutes) continue;
+
+          let hasCloseDcfc = false;
+          if (corridorUsedPoi && h.id.startsWith("poi_services:hotel:")) {
+            const hid = Number(h.id.replace("poi_services:hotel:", ""));
+            const rawHotel =
+              Number.isFinite(hid) && poiCorridorHotelPois?.length
+                ? poiCorridorHotelPois.find((x) => x.id === hid)
+                : undefined;
+            const yd = rawHotel?.nearby_dcfc_distance_yd ?? 0;
+            const dcfcId = rawHotel?.nearby_dcfc_id ?? 0;
+            hasCloseDcfc = dcfcId > 0 && yd > 0 && yd <= 400;
+          } else {
+            // Non-POI hotel rows: treat pairs map hit as "close charger present".
+            hasCloseDcfc = Boolean(pairChargerByHotelId[h.id]);
+          }
+
+          if (!hasCloseDcfc) continue;
+          if (!selectedHotel || detourMinutes < selectedBestD) {
+            selectedHotel = h;
             anchorIndex = cand.idx;
-            selectedBestD = bestD;
+            selectedBestD = detourMinutes;
           }
         }
       }
 
-      if (anchorIndex < 0) {
+      if (!selectedHotel && firstHotelChoice) {
+        // Product policy: if no hotel+charger candidate passes checks, fall back
+        // to the first searched hotel and continue with sleep-without-charger.
+        selectedHotel = firstHotelChoice;
+        anchorIndex = firstHotelAnchorIndex;
+        fallbackSleepWithoutCharger = true;
+      }
+
+      if (anchorIndex < 0 || !selectedHotel) {
         segmentAttempt.outcome = "complete_no_overnight_anchor";
         const stopsToAppend = overallStops.length === 0 ? segment.stops : segment.stops.slice(1);
         overallStops = overallStops.concat(stopsToAppend);
@@ -684,7 +712,7 @@ export async function planTripOneLegFromCoords(
           let hotels: CanonicalPoiHotel[] = [];
           if (corridorUsedPoi) {
             hotels = poiHotelsForOvernight?.length
-              ? filterHotelsNear(c.coords, poiHotelsForOvernight, overnightHotelRadiusMeters)
+              ? filterHotelsNear(c.coords, poiHotelsForOvernight, hotelSearchRadiusMeters)
               : [];
             hotelCache.set(cacheKey, hotels);
           } else if (hotelCache.has(cacheKey)) {
@@ -694,7 +722,7 @@ export async function planTripOneLegFromCoords(
               const overpassHotelsT0 = Date.now();
               hotels = await poisProvider.findHolidayInnExpressHotelsNearPoint(
                 c.coords,
-                overnightHotelRadiusMeters,
+                hotelSearchRadiusMeters,
                 { requestId: input.requestId }
               );
               logEvent("provider_overpass_hotels", {
@@ -711,27 +739,34 @@ export async function planTripOneLegFromCoords(
 
           if (!hotels.length) continue;
 
+          hotels = reorderHotelsWithLockedFirst(hotels, input.lockedHotelId);
           let best = hotels[0];
           let bestD = Infinity;
-          if (input.lockedHotelId) {
-            const hit = hotels.find((h) => h.id === input.lockedHotelId);
-            if (!hit) continue;
-            best = hit;
-            bestD = 0;
-          } else {
-            // Pick closest hotel to this charger.
-            for (const h of hotels) {
-              const d =
-                Math.sqrt(
-                  (h.coords.lat - c.coords.lat) ** 2 +
-                    (h.coords.lon - c.coords.lon) ** 2
-                );
-              if (d < bestD) {
-                bestD = d;
-                best = h;
-              }
+          // Pick closest hotel to this charger.
+          for (const h of hotels.slice(0, maxHotelChecks)) {
+            const dToHotelMiles = haversineMiles(c.coords, h.coords);
+            const detourMinutes = ((dToHotelMiles * 2) / 45) * 60;
+            if (detourMinutes > maxHotelDetourMinutes) continue;
+            let hasCloseDcfc = false;
+            if (corridorUsedPoi && h.id.startsWith("poi_services:hotel:")) {
+              const hid = Number(h.id.replace("poi_services:hotel:", ""));
+              const rawHotel =
+                Number.isFinite(hid) && poiCorridorHotelPois?.length
+                  ? poiCorridorHotelPois.find((x) => x.id === hid)
+                  : undefined;
+              const yd = rawHotel?.nearby_dcfc_distance_yd ?? 0;
+              const dcfcId = rawHotel?.nearby_dcfc_id ?? 0;
+              hasCloseDcfc = dcfcId > 0 && yd > 0 && yd <= 400;
+            } else {
+              hasCloseDcfc = Boolean(pairChargerByHotelId[h.id]);
+            }
+            if (!hasCloseDcfc) continue;
+            if (detourMinutes < bestD) {
+              bestD = detourMinutes;
+              best = h;
             }
           }
+          if (!Number.isFinite(bestD)) continue;
 
           // Replan from currentStart to this fallback charger location.
           let fallbackSegment: any = null;
@@ -789,28 +824,6 @@ export async function planTripOneLegFromCoords(
       let sleepHotelForPairs: CanonicalPoiHotel | null = null;
       const anchorEta = anchorStop.etaMinutesFromStart ?? 0;
       if (resolvedSelectedHotel) {
-        if (
-          input.lockedHotelId &&
-          resolvedSelectedHotel.id !== input.lockedHotelId
-        ) {
-          return {
-            requestId: input.requestId,
-            responseVersion: input.responseVersion,
-            status: "error",
-            errorCode: "UNKNOWN_HOTEL_LOCK",
-            message: `Locked hotel id could not be honored at the chosen overnight anchor: ${input.lockedHotelId}`,
-            stops: [],
-            legs: [],
-            totals: {
-              travelTimeMinutes: 0,
-              chargeTimeMinutes: 0,
-              sleepTimeMinutes: 0,
-              totalTimeMinutes: 0,
-              overnightStopsCount: 0
-            },
-            debug
-          };
-        }
         sleepStop = {
           id: `sleep-${anchorStop.id}`,
           name: resolvedSelectedHotel.name,
@@ -825,7 +838,7 @@ export async function planTripOneLegFromCoords(
           let hotels: CanonicalPoiHotel[] = [];
           if (corridorUsedPoi) {
             hotels = poiHotelsForOvernight?.length
-              ? filterHotelsNear(anchorStop.coords, poiHotelsForOvernight, overnightHotelRadiusMeters)
+              ? filterHotelsNear(anchorStop.coords, poiHotelsForOvernight, hotelSearchRadiusMeters)
               : [];
             hotelCache.set(cacheKey, hotels);
           } else if (hotelCache.has(cacheKey)) {
@@ -834,7 +847,7 @@ export async function planTripOneLegFromCoords(
             const overpassHotelsT0 = Date.now();
             hotels = await poisProvider.findHolidayInnExpressHotelsNearPoint(
               anchorStop.coords,
-              overnightHotelRadiusMeters,
+              hotelSearchRadiusMeters,
               { requestId: input.requestId }
             );
             logEvent("provider_overpass_hotels", {
@@ -846,48 +859,19 @@ export async function planTripOneLegFromCoords(
             hotelCache.set(cacheKey, hotels);
           }
           if (hotels.length) {
-            if (input.lockedHotelId) {
-              const exact = hotels.find((h) => h.id === input.lockedHotelId);
-              if (!exact) {
-                return {
-                  requestId: input.requestId,
-                  responseVersion: input.responseVersion,
-                  status: "error",
-                  errorCode: "UNKNOWN_HOTEL_LOCK",
-                  message: `Locked hotel id not found near the overnight anchor charger: ${input.lockedHotelId}`,
-                  stops: [],
-                  legs: [],
-                  totals: {
-                    travelTimeMinutes: 0,
-                    chargeTimeMinutes: 0,
-                    sleepTimeMinutes: 0,
-                    totalTimeMinutes: 0,
-                    overnightStopsCount: 0
-                  },
-                  debug
-                };
+            hotels = reorderHotelsWithLockedFirst(hotels, input.lockedHotelId);
+            let best = hotels[0];
+            let bestD = Infinity;
+            for (const h of hotels.slice(0, maxHotelChecks)) {
+              const dToHotelMiles = haversineMiles(anchorStop.coords, h.coords);
+              const detourMinutes = ((dToHotelMiles * 2) / 45) * 60;
+              if (detourMinutes > maxHotelDetourMinutes) continue;
+              if (detourMinutes < bestD) {
+                bestD = detourMinutes;
+                best = h;
               }
-              sleepStop = {
-                id: `sleep-${anchorStop.id}`,
-                name: exact.name,
-                coords: exact.coords,
-                etaMinutesFromStart: anchorEta
-              };
-              sleepHotelForPairs = exact;
-            } else {
-              let best = hotels[0];
-              let bestD = Infinity;
-              for (const h of hotels) {
-                const d =
-                  Math.sqrt(
-                    (h.coords.lat - anchorStop.coords.lat) ** 2 +
-                      (h.coords.lon - anchorStop.coords.lon) ** 2
-                  );
-                if (d < bestD) {
-                  bestD = d;
-                  best = h;
-                }
-              }
+            }
+            if (best) {
               sleepStop = {
                 id: `sleep-${anchorStop.id}`,
                 name: best.name,
@@ -900,26 +884,6 @@ export async function planTripOneLegFromCoords(
         } catch {
           // Overpass failure degrades to charging-only (no hotel stop).
         }
-      }
-
-      if (input.lockedHotelId && !sleepStop) {
-        return {
-          requestId: input.requestId,
-          responseVersion: input.responseVersion,
-          status: "error",
-          errorCode: "UNKNOWN_HOTEL_LOCK",
-          message: `Locked hotel id could not be placed for overnight: ${input.lockedHotelId}`,
-          stops: [],
-          legs: [],
-          totals: {
-            travelTimeMinutes: 0,
-            chargeTimeMinutes: 0,
-            sleepTimeMinutes: 0,
-            totalTimeMinutes: 0,
-            overnightStopsCount: 0
-          },
-          debug
-        };
       }
 
       logEvent(sleepStop ? "sleep_stop_created" : "sleep_stop_missing", {
@@ -946,7 +910,12 @@ export async function planTripOneLegFromCoords(
             sleepChargerSource?: string;
           }
         | undefined = undefined;
-      if (sleepStop) {
+      if (sleepStop && fallbackSleepWithoutCharger) {
+        sleepChargerMeta = {
+          chargerFound: false,
+          sleepChargerSource: "none"
+        };
+      } else if (sleepStop) {
         const poiHotelPrefix = "poi_services:hotel:";
 
         if (
