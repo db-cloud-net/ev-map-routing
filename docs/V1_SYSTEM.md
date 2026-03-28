@@ -1,5 +1,7 @@
 # V1 system — reconstruction handoff
 
+> **Planner corridor source:** With **`POI_SERVICES_BASE_URL`** set, **POI Services** is the runtime source for corridor DC-fast chargers, hotels, and optional pairs/edges. Travel-Routing does **not** use live NREL for that path. Sections below that mention NREL, Overpass, or the **local mirror** describe **legacy/parallel** tiers or **offline refresh**, not the default product routing surface.
+
 This document is the **minimal sufficient** map to understand and re-derive what this repo implements, without re-reading every artifact. Use it as a **clean starting point for v2**.
 
 For **product behavior** (overnight stops, hotels, charging invariants), keep [`PRD.md`](../PRD.md) as the normative requirements source. For **v2 API** fields (`waypoints`, `candidates`), see [`V2_API.md`](./V2_API.md).
@@ -9,8 +11,8 @@ For **product behavior** (overnight stops, hotels, charging invariants), keep [`
 ## 1. What this repository is
 
 - **Monorepo:** `web/` (Next.js 14 app, map + Plan Trip UI), `api/` (Express + TypeScript planner).
-- **Core user flow:** Browser → `POST /api` → `POST /plan` → `planTrip()` resolves chargers + POIs via a **source router**, builds legs with **Valhalla** time/distance, applies overnight/hotel logic per PRD.
-- **Optional:** **Local mirror** of NREL + Overpass data (NDJSON + manifest), with routing modes: `remote_only`, `local_primary_fallback_remote`, **`local_primary_fail_closed`** (mirror-only, **ROUTING_UX_SPEC** §2 fail-closed), `dual_read_compare` — plus observability logs.
+- **Core user flow:** Browser → `POST /api` → `POST /plan` → `planTrip()` resolves corridor chargers + POIs (**POI Services** when configured), builds legs with **Valhalla** time/distance, applies overnight/hotel logic per PRD.
+- **Optional:** **Local mirror** of NREL + Overpass data (NDJSON + manifest) for **offline refresh** and **`SOURCE_ROUTING_MODE`** tiers when not using POI corridor: `remote_only`, `local_primary_fallback_remote`, **`local_primary_fail_closed`** (mirror-only, **ROUTING_UX_SPEC** §2 fail-closed), `dual_read_compare` — plus observability logs.
 
 ---
 
@@ -25,9 +27,8 @@ For **product behavior** (overnight stops, hotels, charging invariants), keep [`
 | [`api/src/services/`](../api/src/services/) | Geocode (Nominatim), NREL, Overpass, Valhalla clients. |
 | [`web/src/app/map/page.tsx`](../web/src/app/map/page.tsx) | Map UI, Plan Trip, error classification. |
 | [`shared/types.ts`](../shared/types.ts) | Shared types consumed by API (and build). |
-| [`docker-compose.mirror.yml`](../docker-compose.mirror.yml) | Planner + one-shot mirror refresh (NAS/deploy). |
 | [`Dockerfile`](../Dockerfile) | Multi-stage Node build (api + web artifacts). |
-| [`scripts/`](../scripts/) | E2E/smoke (`e2e-*.mjs`, `mirror-c4-*.mjs`, `qa-smoke-all.mjs`, `d1-verify-mirror.mjs`). |
+| [`scripts/`](../scripts/) | E2E/smoke (`e2e-*.mjs`, `qa-smoke-all.mjs`). |
 
 ---
 
@@ -40,14 +41,14 @@ flowchart LR
   PT --> Geo[Geocode_Nominatim]
   PT --> V[Valhalla_polyline]
   PT --> SR[sourceRouter]
-  SR --> NREL[NREL_or_mirror_chargers]
+  SR --> POI[POI_Services_or_legacy_chargers]
   PT --> LTS[planLeastTimeSegment]
   LTS --> V2[Valhalla_leg_times]
   PT --> OVP[Overpass_or_mirror_hotels]
   PT --> Resp[PlanTripResponse_JSON]
 ```
 
-- **Timeouts:** Total budget `PLAN_TOTAL_TIMEOUT_MS` on the server; per-stage envs in [`TESTING.md`](../TESTING.md) (geocode, Valhalla polyline/legs, NREL, Overpass).
+- **Timeouts:** Total budget `PLAN_TOTAL_TIMEOUT_MS` on the server; per-stage envs in [`TESTING.md`](../TESTING.md) (geocode, Valhalla polyline/legs, POI Services, legacy NREL/Overpass when those paths run).
 
 ---
 
@@ -55,8 +56,9 @@ flowchart LR
 
 | Service | Role | Config |
 |---------|------|--------|
-| **NREL** | DC-fast (or broader) chargers along corridor | `NREL_API_KEY`, `NREL_FETCH_TIMEOUT_MS`, … |
-| **Overpass** | Hotel POIs (e.g. Holiday Inn Express query family in refresh) | `OVERPASS_FETCH_TIMEOUT_MS`, … |
+| **POI Services** | Corridor DC-fast chargers, hotels, pairs, edges (`POST /corridor/query`) | `POI_SERVICES_BASE_URL`, `POI_SERVICES_TIMEOUT_MS`, … |
+| **NREL** | *(Legacy / mirror refresh)* DC-fast chargers via HTTP or snapshot ingest | `NREL_API_KEY`, `NREL_FETCH_TIMEOUT_MS`, … — not the product `/plan` path when POI corridor is configured |
+| **Overpass** | *(Legacy / mirror refresh)* Hotel POIs | `OVERPASS_FETCH_TIMEOUT_MS`, … |
 | **Valhalla** | Route polyline + leg times/distances | `VALHALLA_BASE_URL` (see **[docs/VALHALLA.md](./VALHALLA.md)**) |
 | **Nominatim** | Geocoding | `PLAN_GEOCODE_TIMEOUT_MS`, `NOMINATIM_*` |
 
@@ -73,11 +75,11 @@ flowchart LR
 
 ## 6. How to run (reconstruct locally)
 
-1. `cp .env.example .env` — set `NREL_API_KEY`, `VALHALLA_BASE_URL`, mirror/routing vars as needed.
+1. `cp .env.example .env` — set **`POI_SERVICES_BASE_URL`**, **`VALHALLA_BASE_URL`**, and mirror/routing vars as needed; add **`NREL_API_KEY`** only for mirror refresh or legacy remote tests.
 2. `npm run dev:api` and `npm run dev:web` (ports **3001** / **3000**). See [`README.md`](../README.md).
 3. `npm run qa:smoke` — API `tsc` + CORS + log-contract E2E (no Docker required). See [`TESTING.md`](../TESTING.md).
 
-**Docker mirror stack:** [`docker-compose.mirror.yml`](../docker-compose.mirror.yml) + [`docs/d1-runbook.md`](./d1-runbook.md).
+**Deploy:** [`docs/d1-runbook.md`](./d1-runbook.md) (POI + planner on Docker networks).
 
 ### Production HTTPS (Cloudflare Tunnel)
 

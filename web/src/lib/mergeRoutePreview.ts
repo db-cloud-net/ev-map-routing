@@ -105,40 +105,15 @@ export function mergeSecondHorizons(
 }
 
 /**
- * One or more parallel `POST /route-preview` calls (v1 is single-leg only); merges polylines for map + TBT.
- * Returns `null` if any segment fails or response is invalid.
+ * Merge successful per-hop `POST /route-preview` responses (same order as `pairs`).
+ * `totalSegments` — when set and `ok.length < totalSegments`, adds `partialPreviewMeta` for UI.
  */
-export async function fetchMergedRoutePreview(
-  apiBase: string,
-  segmentEndpoints: string[],
-  signal?: AbortSignal | null
-): Promise<RoutePreviewApiResponse | null> {
-  if (segmentEndpoints.length < 2) return null;
-  const base = apiBase.replace(/\/$/, "");
-  const url = `${base}/route-preview`;
-
-  const pairs: Array<[string, string]> = [];
-  for (let i = 0; i < segmentEndpoints.length - 1; i++) {
-    pairs.push([segmentEndpoints[i], segmentEndpoints[i + 1]]);
-  }
-
-  const results = await Promise.all(
-    pairs.map(async ([segStart, segEnd]) => {
-      const r = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ start: segStart, end: segEnd }),
-        ...(signal ? { signal } : {})
-      });
-      const j = (await r.json().catch(() => null)) as RoutePreviewApiResponse | null;
-      if (!r.ok || !j || j.status !== "ok" || !j.preview?.polyline?.coordinates?.length) return null;
-      if (j.preview.polyline.coordinates.length < 2) return null;
-      return j;
-    })
-  );
-
-  if (results.some((x) => x === null)) return null;
-  const ok = results as RoutePreviewApiResponse[];
+export function mergeRoutePreviewResponses(
+  ok: RoutePreviewApiResponse[],
+  pairs: Array<[string, string]>,
+  totalSegments?: number
+): RoutePreviewApiResponse | null {
+  if (ok.length === 0 || ok.length !== pairs.length) return null;
 
   const coordSegments = ok.map((r) => r.preview!.polyline.coordinates as number[][]);
   const mergedCoords = concatenateLineStringCoordinates(coordSegments);
@@ -154,6 +129,11 @@ export async function fetchMergedRoutePreview(
   const horizon = mergeRoutePreviewHorizons(ok, pairs);
   const nextHorizonMerged = mergeSecondHorizons(ok, pairs);
 
+  const partialPreviewMeta =
+    totalSegments != null && ok.length < totalSegments
+      ? { loadedSegments: ok.length, totalSegments }
+      : undefined;
+
   const merged: RoutePreviewApiResponse = {
     requestId: ok.map((r) => r.requestId).join("+"),
     responseVersion: "v2-1-route-preview",
@@ -166,9 +146,78 @@ export async function fetchMergedRoutePreview(
       tripTimeMinutes,
       tripDistanceMiles,
       horizon,
-      ...(nextHorizonMerged ? { nextHorizon: nextHorizonMerged } : {})
+      ...(nextHorizonMerged ? { nextHorizon: nextHorizonMerged } : {}),
+      ...(partialPreviewMeta ? { partialPreviewMeta } : {})
     }
   };
 
   return merged;
+}
+
+/**
+ * One or more parallel `POST /route-preview` calls (v1 is single-leg only); merges polylines for map + TBT.
+ * As each **contiguous prefix** of hops completes (hop 0, then 0–1, …), invokes `onPartial` so the map can show the
+ * first segment without waiting for every waypoint hop (multi-waypoint trips).
+ * Returns `null` if any segment fails or response is invalid (caller may already have partials via `onPartial`).
+ */
+export async function fetchMergedRoutePreview(
+  apiBase: string,
+  segmentEndpoints: string[],
+  signal?: AbortSignal | null,
+  onPartial?: (merged: RoutePreviewApiResponse) => void
+): Promise<RoutePreviewApiResponse | null> {
+  if (segmentEndpoints.length < 2) return null;
+  const base = apiBase.replace(/\/$/, "");
+  const url = `${base}/route-preview`;
+
+  const pairs: Array<[string, string]> = [];
+  for (let i = 0; i < segmentEndpoints.length - 1; i++) {
+    pairs.push([segmentEndpoints[i], segmentEndpoints[i + 1]]);
+  }
+
+  const n = pairs.length;
+  const results: Array<RoutePreviewApiResponse | null> = new Array(n).fill(null);
+  let emittedPrefix = 0;
+
+  const tryEmitPrefix = () => {
+    let k = 0;
+    while (k < n && results[k] != null) k++;
+    if (k === 0 || k === emittedPrefix) return;
+    const prefixOk = results.slice(0, k) as RoutePreviewApiResponse[];
+    const merged = mergeRoutePreviewResponses(prefixOk, pairs.slice(0, k), n);
+    if (merged) {
+      emittedPrefix = k;
+      onPartial?.(merged);
+    }
+  };
+
+  await Promise.all(
+    pairs.map(async ([segStart, segEnd], i) => {
+      try {
+        /** First hop: no shared abort — show first segment ASAP; later hops still respect `signal` (timeout). */
+        const hopSignal = i > 0 ? signal : undefined;
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ start: segStart, end: segEnd }),
+          ...(hopSignal ? { signal: hopSignal } : {})
+        });
+        const j = (await r.json().catch(() => null)) as RoutePreviewApiResponse | null;
+        if (!r.ok || !j || j.status !== "ok" || !j.preview?.polyline?.coordinates?.length) {
+          results[i] = null;
+        } else if (j.preview.polyline.coordinates.length < 2) {
+          results[i] = null;
+        } else {
+          results[i] = j;
+        }
+      } catch {
+        results[i] = null;
+      }
+      tryEmitPrefix();
+    })
+  );
+
+  if (results.some((x) => x === null)) return null;
+  const ok = results as RoutePreviewApiResponse[];
+  return mergeRoutePreviewResponses(ok, pairs, n);
 }

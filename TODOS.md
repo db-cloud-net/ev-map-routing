@@ -1,8 +1,10 @@
 # TODOS
 
-**Resume local mirror work:** [`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md) *(what’s done, next steps, file index — updated 2026-03-20).*
+> **Planner corridor source:** With **`POI_SERVICES_BASE_URL`** set, **POI Services** is the runtime source for corridor DC-fast chargers and hotels. **POI-only runtime cleanup** is **shipped** in code (`api/src/corridor/`, **`resolvePlanProviders`** → **`poi_only`**); see **[`docs/designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md`](docs/designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md)**. Long-form **mirror** docs are **historical** only.
 
-## Current status (snapshot — **2026-03-23**)
+**Resume local mirror work:** [`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md) *(historical; mirror stack targeted for removal per backlog above).*
+
+## Current status (snapshot — **2026-03-27**)
 
 **DRI:** David *(adjust if ownership changes)*
 
@@ -10,12 +12,27 @@
 
 **P0 gate on `main`:** `npm -w api run build` · `npm run qa:smoke` · `npm -w web run build` — re-run after substantive changes (E2E **`E2E_SPAWN_PORT`** + **`debug.sourceRouting`** landed **2026-03-23**).
 
+### Current — in review for development (**active**)
+
+**Theme:** **Range-leg EV planning** (≈one vehicle charge per leg, next leg starts at chosen charger) **+** **route / debug updates as each leg is committed**.
+
+**Canonical ADR (scope, ship order 2→3→1, debug policy, deferred mirror):** **[`docs/designs/range-leg-incremental-trust-adr.md`](docs/designs/range-leg-incremental-trust-adr.md)** — **active focus: ROUTING_UX §4** — **progressive refinement loops** (server-side multi-round refinement + waypoint reorder toward charge/sleep anchors; see **[`slice4-progressive-first-screen.md`](docs/designs/slice4-progressive-first-screen.md)** open items). **Pillar 3 §3a–c shipped** ( **`planJob`** checkpoints in product UI). **Pillar 2** transport **shipped**; **Pillar 1 v1** paused — handoff: **[§ Pillar 1 v1 handoff](docs/designs/range-leg-incremental-trust-adr.md#pillar-1-v1-handoff-paused)**. Terminology & gap vs MVP: **[`docs/designs/range-based-segments-intent.md`](docs/designs/range-based-segments-intent.md)** · **[`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md)** §3–§4 / §6.5–6.6 · **[`TESTING.md`](TESTING.md)** §5.5.
+
+**Backlog (same theme):** **§4 refinement loops** (see ADR + slice4 doc) · **per–range-leg road geometry** on map (use **`rangeLegs`** + Valhalla) · **Pillar 1** resume: **range-window optimizer** (see ADR handoff).
+
+**~~Backlog — POI-only architecture cleanup~~ — shipped:** see **[`docs/designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md`](docs/designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md)**. **`docs/local-mirror-architecture.md`** kept for history.
+
+**POI Services v2 (data plane) — shipped (2026-03-24):** POI shipped with corridor query + fail-closed; **`lockedHotelId`** supports **`poi_services:hotel:*`**; overnight sleep meta uses hotel **`nearby_dcfc_*`** and POI **`pairs`** / corridor join (optional legacy NREL path in code for dev only) + optional **`POI_REVIEW_LOG`** NDJSON for data QA.
+
 ### Immediate next steps (pick one)
 
-1. ~~**Commit / push**~~ — **`main`** includes **`qa:smoke`** port/env fix (**`6a7bc3e`** area) + ongoing work.
-2. ~~**§4 MVP (map checklist)**~~ — shipped; **§4 remainder** (server-side multi-round refinement + waypoint reorder) is **larger** — schedule explicitly.
-3. ~~**§2 trust (API)**~~ — **`debug.sourceRouting`** on **`POST /plan`** / **`/candidates`** (mirror id + age when mirror tier active).
-4. **Next** — **§4 refinement loops** or **mirror / NAS** ops per **[`docs/LOCAL_MIRROR_CHECKPOINT.md`](docs/LOCAL_MIRROR_CHECKPOINT.md)** · optional **web** surfacing of **`debug.sourceRouting`** on map Debug panel.
+1. **§4 refinement loops** — **Shipped:** segment-hop **`partial_route`** checkpoints · **`optimizeWaypointOrder`** + haversine proxy reorder (**`PLAN_WAYPOINT_REORDER_BUDGET_MS`**) · map **Progressive refinement** copy + segment-hop count + waypoint-order banner · **[`V2_API.md`](docs/V2_API.md)** / **`WEB_SWITCHES.md`**. **Later:** map **`rangeLegs`** road geometry · **Pillar 1** optimizer **[§ handoff](docs/designs/range-leg-incremental-trust-adr.md#pillar-1-v1-handoff-paused)** when prioritized.
+2. ~~**Commit / push**~~ — **`main`** includes **`qa:smoke`** port/env fix (**`6a7bc3e`** area) + ongoing work.
+3. ~~**§4 MVP (map checklist)**~~ — shipped; **§4 remainder** (server-side multi-round refinement + waypoint reorder) is **larger** — schedule explicitly.
+4. ~~**§2 trust (API)**~~ — **`debug.sourceRouting`** on **`POST /plan`** / **`/candidates`** (mirror id + age when mirror tier active).
+5. **Later** — **per–range-leg** Valhalla geometry on map · **Pillar 1** range-window optimizer — see ADR; **mirror / NAS** ops — ADR **Deferred**.
+6. ~~**`/plan` job + poll**~~ — **shipped** (`POST /plan` **`planJob`**, **`GET /plan/jobs/:id`**, web **`NEXT_PUBLIC_PLAN_USE_JOB`**).
+7. ~~**Map + geometry (debug)**~~ — **shipped:** optional **`NEXT_PUBLIC_MAP_DEBUG_RANGE_LEGS`** split of merged preview by **`rangeLegs`** + debug sidebar (**not** standard product UI). ~~**Map + planJob partial UX**~~ — **shipped (2026):** refinement stage 3 stays active during partial checkpoints; green callout + button/status copy (**`NEXT_PUBLIC_PLAN_USE_JOB`**). ~~**Pillar 2** stream/SSE transport~~ — **shipped** (SSE/NDJSON, heartbeats, client reconnect). ~~**Pillar 3** (3a–c)~~ — **shipped** (checkpoint count UI, partial **`legs`** geometry vs preview, Debug **`liveCheckpoints`** copy). **Next:** **§4 refinement loops** (above) · then **`rangeLegs`** road geometry on map / **Pillar 1** per ADR when prioritized.
 
 ### Build & test priority (rolling)
 
@@ -25,8 +42,8 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 |------|------|-----|
 | **P0 — every PR / merge** | `npm -w api run build`; **`npm run qa:smoke`** (see [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md)); add **`npm -w web run build`** if the web app changed | Catches compile breaks + core E2E without Docker/Valhalla in CI. |
 | **P1 — Slice 1 exit / locks confidence** | [`TESTING.md`](TESTING.md) § *Version 2 smoke* + **step 5** (locks); **Phase 1 exit** (replan 5×, Raleigh→Greensboro); **`e2e-multileg-locks-smoke.mjs`** in **`npm run qa:smoke`** (multi-leg + `lockedChargersByLeg`; map UI stays single-segment for tap-to-lock) | Proves shipped V2 locks + UI contract before moving on. |
-| **P2 — mirror / deploy / NAS** | [`docs/d1-runbook.md`](docs/d1-runbook.md), `scripts/d1-verify-mirror.mjs`, mirror C4 scripts — **when** changing mirror, Docker compose, or source routing | Per [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md): not the default PR gate; run before release or infra changes. |
-| **P3 — ROUTING_UX roadmap** | **§3** progressive **~60s** first screen + horizon TBT + refinements (**new API shape** + UI states); **§2** mirror-primary + **fail closed** for `/plan` — [`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md). **Slice 3** [`POST /candidates`](docs/designs/slice3-get-candidates.md) is **shipped**; next is §2–§3 execution, not another “slice 3” milestone. | Spec is frozen; §3/§2 implementation can proceed in parallel with **P2** mirror work where dependencies align. |
+| **P2 — deploy / NAS** | [`docs/d1-runbook.md`](docs/d1-runbook.md) — POI + planner on Docker networks | Per [`docs/CI_SCOPE.md`](docs/CI_SCOPE.md): not the default PR gate; run before release or infra changes. |
+| **P3 — ROUTING_UX roadmap** | **§4** refinement loops (next) · **§3** ~60s first screen + horizon TBT · **§2** POI corridor + **fail closed** — [`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md). **Slice 3** [`POST /candidates`](docs/designs/slice3-get-candidates.md) **shipped**. | Spec is frozen; execution order: **[`range-leg-incremental-trust-adr.md`](docs/designs/range-leg-incremental-trust-adr.md)**. |
 
 **Quick command reference:** `npm run qa:smoke` · `node scripts/e2e-plan-functional.mjs` · `SPAWN_SERVER=true …` per **`TESTING.md`**.
 
@@ -35,20 +52,22 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 **Shipped / working in repo**
 
 - **Phase 1 — Frontend (F1–F3):** Map page clears route + markers on replan (`clearMapPlanArtifacts`), uses **Carto Voyager** GL style for readable labels, route line + halo styling for visibility (`web/src/app/map/page.tsx`).
-- **Phase 1 — Timeouts & errors:** API wraps `planTrip` with **`PLAN_TOTAL_TIMEOUT_MS`** (default 120s) → **408** + `debug.reason: planner_timeout`; web uses **`NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS`** + `AbortController` and **`classifyPlanError`** (timeout vs network vs HTTP) (`api/src/server.ts`, `web/src/app/map/page.tsx`). Documented in **`TESTING.md`**.
+- **Phase 1 — Timeouts & errors:** API wraps `planTrip` with **`PLAN_TOTAL_TIMEOUT_MS`** (default **300s**, aligned with web) → **408** + `debug.reason: planner_timeout`; web uses **`NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS`** + `AbortController` and **`classifyPlanError`** (timeout vs network vs HTTP) (`api/src/server.ts`, `web/src/app/map/page.tsx`). Documented in **`TESTING.md`** (API) + **`docs/WEB_SWITCHES.md`** (web **`NEXT_PUBLIC_*`**). Client abort drops the response body — **`debug.providerCalls`** only appears when JSON is received.
 - **Logging (MVP):** `/plan` emits structured **JSON lines** for start/end/error with **`requestId`**; planner accepts and threads `requestId` through major paths (`api/src/server.ts`, `api/src/planner/planTrip.ts`).
 - **Repo / DX:** `api/dist/` and `web/.next/` ignored; API **`start`** script targets built server path; **`.env.example`**, **`README.md`** (`dev:api` / `dev:web`, port **3000/3001**), **`CORS_ORIGIN`** called out for manual testing.
 - **QA docs:** `TESTING.md` covers smoke vs **`SPAWN_SERVER=true`** E2E, PowerShell env, **Next.js chunk 400 / blank map**, WSL + **`browse`** fallback, CORS/port notes.
-- **Phase 2 (architecture + harness):** `docs/local-mirror-architecture.md` **A1–D3** complete; Phase 2 checklist rows below are **checked**. Mirror smoke scripts (`scripts/mirror-c4-*.mjs`, `d1-verify-mirror.mjs`) + [`docs/d1-runbook.md`](docs/d1-runbook.md) support ops validation.
-- **Production NAS (Synology):** `docker-compose.mirror.yml` under `/volume1/docker/Travel-Routing`: `planner-api`, `mirror-refresh-once`, external **`prod-network`**, Valhalla on same network, **`env_file`** to `.env`. Mirror files: **`api/mirror/current/manifest.json`** + **`api/mirror/snapshots/<id>/`**.
+- **Deploy / NAS:** [`docs/d1-runbook.md`](docs/d1-runbook.md) — POI Services + planner on **`prod-network`** (e.g. **`POI_SERVICES_BASE_URL=http://poi:8010`**). The mirror compose stack was removed from this repo.
 - **V2 Slice 1 — Locks (shipped in code):** `lockedChargersByLeg` + `lockedHotelId` on **`POST /plan`**, **chained** `planLeastTimeSegment` (`planTripOneLegLocked.ts`), **per-leg** rows + **`errorCode`** taxonomy (**`docs/V2_API.md`**), **`V2_MAX_LOCKED_CHARGERS`** (`.env.example`). Map UI: **tap-to-lock** on charger/hotel candidates for **single‑segment** trips only (**`web/src/app/map/page.tsx`**).
+- **Range legs (API, shipped):** **`rangeLegs`** + **`debug.rangeLegs`** on successful **`POST /plan`** (charge-boundary grouping from least-time itinerary) — **`api/src/planner/rangeLegs.ts`**. **Map:** polyline split + **Range legs (debug)** sidebar are **opt-in** via **`NEXT_PUBLIC_MAP_DEBUG_RANGE_LEGS`** (`web/src/lib/rangeLegRouteFeatures.ts`, **`docs/WEB_SWITCHES.md`**); standard product is a **single blue** route line.
+- **Planner infeasibility UX (shipped):** **`No feasible itinerary for segment`** responses append the feasibility-model line and expose **`debug.noFeasibleItinerary`** — **`TESTING.md`** troubleshooting.
 
 **Known gaps / don’t assume “done”**
 
 - **Manual `Raleigh → Greensboro`:** Often blocked by **env/ops** (wrong **`CORS_ORIGIN`** vs web port, stale **`web/.next`**, port **3000** already in use), not only planner logic — follow **`README.md`** + **`TESTING.md` §7** and **§ Phase 1 exit verification (manual)**.
-- **Per-stage `/plan` budgets:** See **`TESTING.md`** env matrix (`PLAN_TOTAL_TIMEOUT_MS`, `PLAN_GEOCODE_TIMEOUT_MS`, `PLAN_VALHALLA_POLYLINE_TIMEOUT_MS`, `PLAN_VALHALLA_LEG_TIMEOUT_MS`, `NREL_FETCH_TIMEOUT_MS`, `OVERPASS_FETCH_TIMEOUT_MS`); tune per SLO.
+- **Per-stage `/plan` budgets:** See **`TESTING.md`** env matrix (`PLAN_GEOCODE_TIMEOUT_MS`, `PLAN_VALHALLA_POLYLINE_TIMEOUT_MS`, `PLAN_VALHALLA_LEG_TIMEOUT_MS`, `POI_SERVICES_TIMEOUT_MS`); tune per SLO.
 - **Phase 3:** **`npm run qa:smoke`** covers API build + fast E2E; **`browse.exe`** / UI under WSL may still need **Bun CLI** fallback (documented in **`TESTING.md`**).
 - **Overnight E2E:** HIE scenario is reliable when run with **`SPAWN_SERVER=true`** (per-case env); smoke-only run against a long-running dev API can **false-fail** (documented in **`TESTING.md`**).
+- **~~NREL / Overpass / mirror removal~~** — shipped; see **deprecate-nrel-overpass-mirror** ADR.
 
 ---
 
@@ -398,6 +417,22 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 **Effort:** M (human) -> M (CC+gstack)  
 **Priority:** P0  
 **Depends on:** Structured request logging (requestId) for `/plan` (recommended for diagnosis).
+
+### Plan job API + polling for `/plan` progress (**P1 — partial**)
+**What:** Async **job model** for `POST /plan`: **202 + job id**, **`GET /plan/jobs/:id`** (poll) with **checkpoints** (solver-attempt rows) until terminal success/error — **`docs/V2_API.md`**, E2E **`scripts/e2e-plan-job.mjs`**. **Still open:** SSE/NDJSON, **cancellation**, durable/redis job store, **§6.6**-style partial itinerary retention / retry-from-segment.  
+**Why:** Elapsed clock + checklist prove *liveness* only; **§6.6** locks **trust** (real commits only) and **failure UX**.  
+**Context:** In-memory jobs + TTL (`api/src/planner/…` hooks + `api/src/planJobStore.ts`).  
+**Effort:** L (human) → L (CC+gstack) for remainder  
+**Priority:** **P1 — partial** (ship order: [`range-leg-incremental-trust-adr.md`](docs/designs/range-leg-incremental-trust-adr.md))  
+**Depends on:** Web consumer; optional durable store + cancel endpoint.
+
+### Stream solver-attempt / per–range-leg debug to map (**P1 — in review**; was roadmap)
+**What:** **Web:** consume **`GET /plan/jobs/:id`** (or future SSE) so **each solver attempt** appears in **Debug (MVP)** **as the planner finishes it**, not only after stagger on a blocking response. **Stretch:** true **range legs** → same panel + map geometry — [`docs/designs/range-based-segments-intent.md`](docs/designs/range-based-segments-intent.md).  
+**Why:** Matches product trust (“see progress as it’s computed”); today’s **staggered readout** (`DebugSolverAttemptsList` in `web/src/app/map/page.tsx`) is **client-only** replay after response.  
+**Context:** Server **`onSolverAttempt`** hooks + job checkpoints shipped — **`TESTING.md`**.  
+**Effort:** M–L (human) → web wiring.  
+**Priority:** **P1 — in review** (ship order: [`range-leg-incremental-trust-adr.md`](docs/designs/range-leg-incremental-trust-adr.md))  
+**Depends on:** Map page poll loop + Debug list source; optional SSE later.
 
 ### Profile and optimize long-haul planner latency
 **What:** Instrument and profile the `Raleigh -> Seattle` style planning path to identify slow stages (geocode, NREL, Overpass, Valhalla), then add targeted mitigations (timeouts, concurrency tuning, cache usage, fallback strategy).  

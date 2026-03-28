@@ -1,16 +1,26 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type {
   CandidatesApiResponse,
+  ItineraryLeg,
   ItineraryStop,
   PlanTripCandidates,
   PlanTripResponse,
+  RangeLegSummary,
   RoutePreviewApiResponse
 } from "../../../../shared/types";
-import { fetchMergedRoutePreview, routePreviewSegmentChain } from "../../lib/mergeRoutePreview";
+import {
+  concatenateLineStringCoordinates,
+  fetchMergedRoutePreview,
+  routePreviewSegmentChain
+} from "../../lib/mergeRoutePreview";
+import {
+  buildRangeLegRouteFeatureCollection,
+  RANGE_LEG_LAYER_COUNT
+} from "../../lib/rangeLegRouteFeatures";
 
 /** Abort merged `/route-preview` fetches so `routePreviewPending` cannot stick forever (no blue line / chord). */
 function abortSignalAfterMs(ms: number): AbortSignal | undefined {
@@ -21,6 +31,344 @@ function abortSignalAfterMs(ms: number): AbortSignal | undefined {
   const c = new AbortController();
   setTimeout(() => c.abort(), ms);
   return c.signal;
+}
+
+const LEGACY_TIMEOUT_MS = 130_000;
+/** Baked builds often had 180s; long multi-stop `/plan` needs more headroom. */
+const LEGACY_PLAN_CLIENT_MS_180 = 180_000;
+/** Default client caps: 5m plan, 5m merged route-preview (multi-hop can be heavy). */
+const DEFAULT_PLAN_CLIENT_MS = 300_000;
+const DEFAULT_ROUTE_PREVIEW_CLIENT_MS = 300_000;
+
+const COLORS = {
+  roadBlue: "#0b7cff",
+  dcfcTeal: "#39a6a1",
+  l2Teal: "#7fd8d4",
+  hotelLightOrange: "#f6ad55",
+  hotelDarkOrange: "#c05621",
+  /** Sleep stop with charger at / near the hotel. */
+  sleepDarkRed: "#c53030",
+  /** Sleep stop with no charger nearby — bright blue diamond on the map. */
+  sleepHotelBrightBlue: "#1e90ff"
+} as const;
+
+/**
+ * Itinerary sleep (hotel) stops use a diamond, not the default teardrop pin.
+ * MapLibre sets `transform` on the marker root for map positioning — rotation must live on an inner node
+ * or it is overwritten and the pin reads as an axis-aligned square.
+ */
+function sleepStopMarkerElement(hasChargerNearby: boolean): HTMLDivElement {
+  const root = document.createElement("div");
+  root.style.display = "flex";
+  root.style.alignItems = "center";
+  root.style.justifyContent = "center";
+  root.style.width = "20px";
+  root.style.height = "20px";
+  root.style.pointerEvents = "auto";
+  const inner = document.createElement("div");
+  const n = 14;
+  inner.style.width = `${n}px`;
+  inner.style.height = `${n}px`;
+  inner.style.background = hasChargerNearby ? COLORS.sleepDarkRed : COLORS.sleepHotelBrightBlue;
+  inner.style.transform = "rotate(45deg)";
+  inner.style.border = "2px solid rgba(255, 255, 255, 0.92)";
+  inner.style.boxShadow = "0 1px 4px rgba(0, 0, 0, 0.35)";
+  inner.style.borderRadius = "2px";
+  inner.style.boxSizing = "border-box";
+  inner.style.flexShrink = "0";
+  root.appendChild(inner);
+  return root;
+}
+
+function toNumberOrNull(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function hasFiniteCoords(v: { lat?: unknown; lon?: unknown } | null | undefined): v is {
+  lat: number | string;
+  lon: number | string;
+} {
+  if (v == null) return false;
+  const lat = toNumberOrNull(v.lat);
+  const lon = toNumberOrNull(v.lon);
+  return lat != null && lon != null;
+}
+
+function isLikelyPoiStop(stop: ItineraryStop): boolean {
+  if (typeof stop.id === "string" && stop.id.startsWith("poi_services:")) return true;
+  const meta = (stop.meta ?? {}) as Record<string, unknown>;
+  const sleepSrc = meta.sleepChargerSource;
+  if (typeof sleepSrc === "string" && sleepSrc.startsWith("poi_")) return true;
+  return false;
+}
+
+function haversineMiles(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const R = 3958.7613;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const x =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  const y = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+  return R * y;
+}
+
+function isLikelyL2Power(maxPowerKw: number | null): boolean {
+  return maxPowerKw != null && maxPowerKw > 0 && maxPowerKw < 50;
+}
+
+/**
+ * Next inlines `NEXT_PUBLIC_*` at build time. Legacy values (130s, 180s) map to
+ * the current default so long `/plan` runs are not cut off unless env is set otherwise.
+ */
+function resolvePublicClientTimeoutMs(raw: string | undefined, fallbackMs: number): number {
+  if (raw === undefined || raw === "") return fallbackMs;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallbackMs;
+  if (n === LEGACY_TIMEOUT_MS || n === LEGACY_PLAN_CLIENT_MS_180) return fallbackMs;
+  return n;
+}
+
+function planClientTimeoutMs(): number {
+  return resolvePublicClientTimeoutMs(process.env.NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS, DEFAULT_PLAN_CLIENT_MS);
+}
+
+function routePreviewClientTimeoutMs(): number {
+  return resolvePublicClientTimeoutMs(
+    process.env.NEXT_PUBLIC_ROUTE_PREVIEW_CLIENT_TIMEOUT_MS,
+    DEFAULT_ROUTE_PREVIEW_CLIENT_MS
+  );
+}
+
+/** When true, `POST /plan` uses `planJob: true` and the UI streams `GET /plan/jobs/:id/events` (SSE) by default, or polls `GET /plan/jobs/:id` when `NEXT_PUBLIC_PLAN_USE_SSE=false`. */
+function planUseJob(): boolean {
+  const raw = (process.env.NEXT_PUBLIC_PLAN_USE_JOB ?? "").trim().toLowerCase();
+  // Default-on for progressive planning UX; explicit false disables.
+  if (raw === "false") return false;
+  return true;
+}
+
+/**
+ * When true (default), async plan jobs use `GET /plan/jobs/:id/events` (Server-Sent Events) for checkpoints.
+ * Set `NEXT_PUBLIC_PLAN_USE_SSE=false` to use polling only (`GET /plan/jobs/:id` every 250ms).
+ */
+function planJobUseSse(): boolean {
+  const raw = (process.env.NEXT_PUBLIC_PLAN_USE_SSE ?? "").trim().toLowerCase();
+  if (raw === "false") return false;
+  return true;
+}
+
+/** Transient SSE disconnects: exponential backoff before a new EventSource (server replays checkpoints). */
+const PLAN_JOB_SSE_MAX_RECONNECTS = 8;
+function planJobSseReconnectDelayMs(attemptOneBased: number): number {
+  return Math.min(30_000, 1_000 * 2 ** (attemptOneBased - 1));
+}
+
+function resolvePlanJobEventsUrl(apiBase: string, jobId: string, eventsUrl?: string): string {
+  const base = apiBase.replace(/\/$/, "");
+  const path =
+    typeof eventsUrl === "string" && eventsUrl.startsWith("/") ? eventsUrl : `/plan/jobs/${jobId}/events`;
+  return `${base}${path}`;
+}
+
+function isProdLikeBuild(): boolean {
+  return (process.env.NODE_ENV ?? "").trim().toLowerCase() === "production";
+}
+
+function readPublicBool(raw: string | undefined): boolean | null {
+  if (raw == null) return null;
+  const v = raw.trim().toLowerCase();
+  if (v === "true") return true;
+  if (v === "false") return false;
+  return null;
+}
+
+function mapShowCandidatesDefault(): boolean {
+  const override = readPublicBool(process.env.NEXT_PUBLIC_MAP_SHOW_CANDIDATES_DEFAULT);
+  if (override != null) return override;
+  return !isProdLikeBuild();
+}
+
+function mapShowWaypointsDefault(): boolean {
+  const override = readPublicBool(process.env.NEXT_PUBLIC_MAP_SHOW_WAYPOINTS_DEFAULT);
+  if (override != null) return override;
+  return !isProdLikeBuild();
+}
+
+/**
+ * When true, the map may split the road polyline by presentation `rangeLegs` and show the **Range legs (debug)**
+ * sidebar panel. Standard product keeps a single blue route line and omits that panel — set in `web/.env.local`.
+ */
+function mapDebugRangeLegs(): boolean {
+  return (process.env.NEXT_PUBLIC_MAP_DEBUG_RANGE_LEGS ?? "").trim().toLowerCase() === "true";
+}
+
+/** Count LineString coordinates across legs (Valhalla routes are dense; chord-only legs stay tiny). */
+function countLegLineStringCoordinates(legs: ItineraryLeg[] | undefined): number {
+  let n = 0;
+  for (const leg of legs ?? []) {
+    if (leg.geometry?.type === "LineString" && Array.isArray(leg.geometry.coordinates)) {
+      n += leg.geometry.coordinates.length;
+    }
+  }
+  return n;
+}
+
+/**
+ * Pillar 3b: when `planJob` partial snapshots include enough merged per-leg geometry, prefer that solid line over
+ * merged `/route-preview` (which can disagree with the latest partial stops) and hide the dashed preview.
+ */
+const PARTIAL_PLAN_ROAD_GEOMETRY_MIN_COORDS = 20;
+
+function partialSnapshotLegGeometryDrivesSolidLine(
+  legs: ItineraryLeg[] | undefined,
+  loading: boolean,
+  planJobPartialRoute: boolean
+): boolean {
+  if (!planJobPartialRoute || !loading) return false;
+  return countLegLineStringCoordinates(legs) >= PARTIAL_PLAN_ROAD_GEOMETRY_MIN_COORDS;
+}
+
+function formatElapsedMmSs(totalSec: number): string {
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** Geographic anchors only (start → waypoints → end), in visit order — matches merged `/route-preview` hops. */
+function geographicAnchorsFromStops(stops: ItineraryStop[]): ItineraryStop[] {
+  return stops.filter((s) => s.type === "start" || s.type === "waypoint" || s.type === "end");
+}
+
+/**
+ * When merged route-preview is **partial** (later hops timed out or failed), `partialPreviewMeta` marks
+ * `loadedSegments < totalSegments`. The polyline only covers the first hop(s); append straight
+ * connectors for remaining geographic anchors so the map shows the full corridor (planner legs
+ * usually have no road geometry yet).
+ */
+function extendPartialPreviewPolyline(
+  coordinates: number[][],
+  previewPartial: { loadedSegments: number; totalSegments: number },
+  anchors: ItineraryStop[]
+): [number, number][] {
+  const { loadedSegments, totalSegments } = previewPartial;
+  if (loadedSegments >= totalSegments || anchors.length < totalSegments + 1) {
+    return coordinates as [number, number][];
+  }
+  const segments: number[][][] = [];
+  segments.push(coordinates);
+  for (let h = loadedSegments; h < totalSegments; h++) {
+    const a = anchors[h];
+    const b = anchors[h + 1];
+    segments.push([
+      [a.coords.lon, a.coords.lat],
+      [b.coords.lon, b.coords.lat]
+    ]);
+  }
+  return concatenateLineStringCoordinates(segments);
+}
+
+/** Progressive UX: `planJob` checkpoints may include `partialSnapshot` before the final `result`. */
+function planTripResponseFromPartialSnapshot(
+  accepted: { requestId?: string; jobId?: string; responseVersion?: string },
+  snapshot: { stops: ItineraryStop[]; legs: ItineraryLeg[]; rangeLegs?: RangeLegSummary[] }
+): PlanTripResponse {
+  return {
+    requestId: accepted.requestId ?? accepted.jobId ?? "plan-job",
+    responseVersion: accepted.responseVersion ?? "v2-1",
+    status: "ok",
+    message: "Planning…",
+    stops: snapshot.stops,
+    legs: snapshot.legs,
+    rangeLegs: snapshot.rangeLegs,
+    debug: { planJobPartialRoute: true }
+  };
+}
+
+type PlanJobCheckpointRow = {
+  t?: number | string;
+  legIndex: number;
+  attempt: Record<string, unknown>;
+};
+
+function countSegmentPrefixRefinementRows(rows: PlanJobCheckpointRow[]): number {
+  let n = 0;
+  for (const r of rows) {
+    const a = r.attempt;
+    if (!a || typeof a !== "object") continue;
+    if ((a as { kind?: string }).kind !== "partial_route") continue;
+    const ref = (a as { refinement?: { kind?: string } }).refinement;
+    if (ref?.kind === "segment_prefix") n += 1;
+  }
+  return n;
+}
+
+/** Shared by SSE and poll: map checkpoint rows → progressive partial plan + per-leg solver debug rows. */
+function applyPlanJobCheckpointRows(
+  checkpoints: PlanJobCheckpointRow[],
+  accepted: { jobId?: string; requestId?: string; responseVersion?: string },
+  progressiveBestStops: number,
+  setPlan: Dispatch<SetStateAction<PlanTripResponse | null>>,
+  setJobLiveSolverLegs: Dispatch<SetStateAction<unknown[][] | null>>
+): { progressiveBestStops: number } {
+  const byLeg = new Map<number, unknown[]>();
+  let bestPartialThisPoll: PlanTripResponse | null = null;
+  let bestStopsThisPoll = progressiveBestStops;
+  for (const c of checkpoints) {
+    const att = c.attempt;
+    if (
+      att &&
+      typeof att === "object" &&
+      (att as { kind?: string }).kind === "partial_route"
+    ) {
+      const reason = (att as { reason?: string }).reason;
+      if (reason === "quick_first_segment_estimate" && (c.legIndex ?? 0) > 0) {
+        continue;
+      }
+      const ps = (att as { partialSnapshot?: unknown }).partialSnapshot;
+      if (ps && typeof ps === "object") {
+        const p = ps as {
+          stops?: ItineraryStop[];
+          legs?: ItineraryLeg[];
+          rangeLegs?: RangeLegSummary[];
+        };
+        if (Array.isArray(p.stops) && Array.isArray(p.legs)) {
+          if (p.stops.length > progressiveBestStops && p.stops.length >= bestStopsThisPoll) {
+            bestStopsThisPoll = p.stops.length;
+            bestPartialThisPoll = planTripResponseFromPartialSnapshot(accepted, {
+              stops: p.stops,
+              legs: p.legs,
+              rangeLegs: Array.isArray(p.rangeLegs) ? p.rangeLegs : undefined
+            });
+          }
+        }
+      }
+      continue;
+    }
+    const li = typeof c.legIndex === "number" ? c.legIndex : 0;
+    if (!byLeg.has(li)) byLeg.set(li, []);
+    byLeg.get(li)!.push(c.attempt);
+  }
+  let nextProgressive = progressiveBestStops;
+  if (bestPartialThisPoll) {
+    nextProgressive = bestStopsThisPoll;
+    setPlan(bestPartialThisPoll);
+  }
+  const maxLeg = Math.max(0, ...Array.from(byLeg.keys()));
+  const legs: unknown[][] = [];
+  for (let i = 0; i <= maxLeg; i++) {
+    legs.push(byLeg.get(i) ?? []);
+  }
+  setJobLiveSolverLegs(legs);
+  return { progressiveBestStops: nextProgressive };
 }
 
 type RefinementStage = "skipped" | "pending" | "active" | "done" | "error" | "idle";
@@ -43,11 +391,188 @@ function refinementStageStyle(s: RefinementStage): { glyph: string; color: strin
   }
 }
 
+/**
+ * Renders `debug.segmentsAttempted`-shaped rows (one least-time / overnight **solver attempt** per card).
+ * - **Blocking `POST /plan`:** data arrives in one response; optional **stagger** reveals cards for readability.
+ * - **Async `planJob`:** rows are built from **checkpoint** `attempt` payloads (SSE or poll); no stagger — the server already streams checkpoints.
+ * A **checkpoint** is one `{ t, legIndex, attempt }` row from `GET /plan/jobs/...` (or SSE `type: "checkpoint"`). **`partial_route`** checkpoints update the itinerary elsewhere and are not listed here.
+ */
+const SOLVER_DEBUG_STAGGER_MS = 120;
+
+function DebugSolverAttemptsList({
+  segments,
+  heading,
+  requestId,
+  staggerMs = SOLVER_DEBUG_STAGGER_MS,
+  liveCheckpoints = false
+}: {
+  segments: unknown[];
+  heading: string;
+  requestId: string;
+  staggerMs?: number;
+  /** True when rows come from live plan-job checkpoints (show all cards immediately; no stagger). */
+  liveCheckpoints?: boolean;
+}) {
+  const [visibleCount, setVisibleCount] = useState(0);
+
+  useEffect(() => {
+    if (!segments.length) {
+      setVisibleCount(0);
+      return;
+    }
+    if (liveCheckpoints || staggerMs <= 0) {
+      setVisibleCount(segments.length);
+      return;
+    }
+    setVisibleCount(1);
+    if (segments.length <= 1) return;
+    let n = 1;
+    const id = window.setInterval(() => {
+      n += 1;
+      setVisibleCount(n);
+      if (n >= segments.length) window.clearInterval(id);
+    }, staggerMs);
+    return () => window.clearInterval(id);
+  }, [requestId, segments.length, staggerMs, liveCheckpoints]);
+
+  if (!segments.length) return null;
+  const visible = segments.slice(0, visibleCount);
+
+  return (
+    <div
+      style={{
+        marginBottom: 10,
+        padding: 12,
+        background: "#faf5ff",
+        border: "1px solid #d8b4fe",
+        borderRadius: 6,
+        fontSize: 12,
+        color: "#4c1d95"
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>{heading}</div>
+      <p style={{ margin: "0 0 8px 0", fontSize: 11, color: "#6b21a8", lineHeight: 1.45 }}>
+        Each card is one <strong>solver attempt</strong> (least-time / overnight loop), not a fixed vehicle{" "}
+        <strong>range leg</strong>.{" "}
+        {liveCheckpoints ? (
+          <>
+            Source: <strong>checkpoints</strong> from{" "}
+            {planJobUseSse() ? (
+              <>
+                <code>GET /plan/jobs/:id/events</code> (SSE)
+              </>
+            ) : (
+              <>
+                polling <code>GET /plan/jobs/:id</code>
+              </>
+            )}{" "}
+            — each non–<code>partial_route</code> checkpoint contributes one row here (
+            <code>NEXT_PUBLIC_PLAN_USE_JOB</code>
+            {planJobUseSse() ? "" : "; set NEXT_PUBLIC_PLAN_USE_SSE=false to force poll"}).{" "}
+            <strong>Partial</strong> checkpoints drive the itinerary above, not this list.
+          </>
+        ) : (
+          <>
+            Source: <code>debug.segmentsAttempted</code> in the <strong>finished</strong> blocking{" "}
+            <code>POST /plan</code> body. This panel <strong>staggers</strong> cards (~{SOLVER_DEBUG_STAGGER_MS}ms) for
+            readability — the browser already has the full array.
+          </>
+        )}{" "}
+        See <code>docs/designs/range-based-segments-intent.md</code>.
+      </p>
+      {visible.map((raw, idx) => {
+        const s = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+        const ok = s.solverStatus === "ok";
+        const label =
+          s.kind === "remainder"
+            ? "Remainder → end"
+            : s.chainIndex != null && s.toKind != null
+              ? `Chain ${String(s.chainIndex)} → ${String(s.toId)} (${String(s.toKind)})`
+              : s.overnightIndex != null
+                ? `Attempt ${idx + 1} (overnight ${String(s.overnightIndex)})`
+                : `Attempt ${idx + 1}`;
+        return (
+          <details
+            key={`${requestId}-att-${idx}`}
+            style={{
+              marginBottom: 8,
+              padding: "6px 8px",
+              background: "#fff",
+              border: "1px solid #e9d5ff",
+              borderRadius: 4
+            }}
+          >
+            <summary style={{ cursor: "pointer", listStyle: "none" }}>
+              <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{label}</span>
+              {" · "}
+              <span style={{ color: ok ? "#15803d" : "#b91c1c" }}>{String(s.solverStatus ?? "—")}</span>
+              {s.outcome != null ? <span style={{ color: "#6b21a8" }}> · {String(s.outcome)}</span> : null}
+            </summary>
+            <div style={{ marginTop: 8, fontSize: 11, lineHeight: 1.5 }}>
+              {s.segmentStartId != null ? (
+                <div>
+                  <strong>start</strong>{" "}
+                  <span style={{ fontFamily: "monospace" }}>{String(s.segmentStartId)}</span>
+                </div>
+              ) : null}
+              {s.overnightIndex != null ? (
+                <div>
+                  <strong>overnightIndex</strong> {String(s.overnightIndex)}
+                </div>
+              ) : null}
+              {typeof s.totalTimeMinutes === "number" ? (
+                <div>
+                  <strong>totalTime</strong> {Math.round(s.totalTimeMinutes)} min
+                </div>
+              ) : null}
+              {typeof s.stopsCount === "number" ? (
+                <div>
+                  <strong>stops</strong> {s.stopsCount}
+                  {typeof s.chargeStopsCount === "number" ? ` (charge ${s.chargeStopsCount})` : null}
+                </div>
+              ) : null}
+              {typeof s.legsCount === "number" ? (
+                <div>
+                  <strong>legs</strong> {s.legsCount}
+                </div>
+              ) : null}
+              {typeof s.chargersPoolCount === "number" ? (
+                <div>
+                  <strong>chargers pool</strong> {s.chargersPoolCount}
+                </div>
+              ) : null}
+              {s.errorMessage != null ? (
+                <div style={{ color: "#b91c1c", marginTop: 6 }}>{String(s.errorMessage)}</div>
+              ) : null}
+              <pre
+                style={{
+                  margin: "8px 0 0 0",
+                  whiteSpace: "pre-wrap",
+                  fontSize: 10,
+                  padding: 8,
+                  background: "#f5f3ff",
+                  borderRadius: 4,
+                  maxHeight: 220,
+                  overflow: "auto"
+                }}
+              >
+                {JSON.stringify(s, null, 2)}
+              </pre>
+            </div>
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function MapPage() {
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const candidateMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const autoFitConsumedRef = useRef(false);
+  const [mapReady, setMapReady] = useState(false);
 
   /** F1: clear route + markers immediately on replan (before async state updates). */
   function clearMapPlanArtifacts() {
@@ -61,23 +586,57 @@ export default function MapPage() {
       "route-line",
       "route-line-halo",
       "route-preview-line",
-      "route-preview-line-halo"
+      "route-preview-line-halo",
+      "stops-fallback-circle",
+      "stops-fallback-sleep",
+      "candidates-fallback-chargers",
+      "candidates-fallback-hotels"
     ]) {
       if (map.getLayer(lid)) map.removeLayer(lid);
     }
     if (map.getSource("route-geojson")) map.removeSource("route-geojson");
     if (map.getSource("route-preview-geojson")) map.removeSource("route-preview-geojson");
+    if (map.getSource("stops-fallback-geojson")) map.removeSource("stops-fallback-geojson");
+    if (map.getSource("candidates-fallback-geojson")) map.removeSource("candidates-fallback-geojson");
   }
 
   const [start, setStart] = useState("Raleigh, NC");
   const [end, setEnd] = useState("Seattle, WA");
   /** One destination per line (optional). Chained as ordered waypoints between start and end. */
   const [waypointsText, setWaypointsText] = useState("");
-  const [showChargerCandidates, setShowChargerCandidates] = useState(true);
-  const [showHotelCandidates, setShowHotelCandidates] = useState(true);
+  const [optimizeWaypointOrder, setOptimizeWaypointOrder] = useState(
+    () => (process.env.NEXT_PUBLIC_OPTIMIZE_WAYPOINT_ORDER ?? "true").toLowerCase() !== "false"
+  );
+  const defaultShowCandidates = mapShowCandidatesDefault();
+  const defaultShowWaypoints = mapShowWaypointsDefault();
+  const [showChargerCandidates, setShowChargerCandidates] = useState(defaultShowCandidates);
+  const [showHotelCandidates, setShowHotelCandidates] = useState(defaultShowCandidates);
   const [loading, setLoading] = useState(false);
+  /** Wall-clock seconds while `loading` — proves the tab is not frozen (ROUTING_UX_SPEC §6.5). */
+  const [planElapsedSec, setPlanElapsedSec] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<PlanTripResponse | null>(null);
+  /** True while `GET /plan/jobs/…` is still running and the UI shows a checkpoint-only snapshot (ROUTING_UX_SPEC §6.6). */
+  const isPartialPlanSnapshot = useMemo(
+    () =>
+      Boolean(
+        plan &&
+          plan.status === "ok" &&
+          (plan.debug as Record<string, unknown> | undefined)?.planJobPartialRoute === true
+      ),
+    [plan]
+  );
+  /**
+   * While an async plan job runs (`planJob: true`), checkpoint `attempt` rows per waypoint leg (leg index), for Debug.
+   * Cleared when the final `result` is applied to `plan`.
+   */
+  const [jobLiveSolverLegs, setJobLiveSolverLegs] = useState<unknown[][] | null>(null);
+  /** Request id shown for live job debug list (from 202 body or poll). */
+  const [jobLiveRequestId, setJobLiveRequestId] = useState<string | null>(null);
+  /** Pillar 3: server checkpoints received (SSE accumulator or latest poll length); cleared when the job ends. */
+  const [planJobCheckpointCount, setPlanJobCheckpointCount] = useState<number | null>(null);
+  /** §4 segment-hop refinements (`refinement.kind === "segment_prefix"`) seen in plan-job checkpoints. */
+  const [segmentPrefixRefinementCount, setSegmentPrefixRefinementCount] = useState<number | null>(null);
   /** Slice 3: pins from `POST /candidates` before `/plan` completes (same id universe). */
   const [candidatePreview, setCandidatePreview] = useState<PlanTripCandidates | null>(null);
   const candidatesRequestGenRef = useRef(0);
@@ -105,21 +664,43 @@ export default function MapPage() {
   );
   const legCount = Math.max(1, parsedWaypoints.length + 1);
   const singleLegTrip = parsedWaypoints.length === 0;
+  const showWaypointMarkers = defaultShowWaypoints;
 
   /** Slice 4 Phase 3: honest “what’s running” vs a flat “Planning…” (ROUTING_UX_SPEC §7). */
   const planningButtonLabel = useMemo(() => {
     if (!loading) return "Plan Trip";
     if (routePreviewPending) return "Road preview…";
+    if (isPartialPlanSnapshot && plan && plan.stops.length > 0) {
+      return `Itinerary (${plan.stops.length} stops)…`;
+    }
     return "Planning trip…";
-  }, [loading, routePreviewPending]);
+  }, [loading, routePreviewPending, isPartialPlanSnapshot, plan]);
 
   const planningLoadingHelp = useMemo(() => {
     if (!loading) return null;
     if (routePreviewPending) {
       return "Fetching Valhalla road preview (runs in parallel with the EV planner).";
     }
-    return "EV least-time planner running (chargers, stops, times).";
-  }, [loading, routePreviewPending]);
+    if (isPartialPlanSnapshot && plan && plan.stops.length > 0) {
+      return `Partial route from the server (${plan.stops.length} stops so far). The map and itinerary list update as checkpoints arrive; totals and full debug ship when the job completes.`;
+    }
+    if (planUseJob()) {
+      return "EV least-time planner running (chargers, stops, times) — usually the slowest stage. With NEXT_PUBLIC_PLAN_USE_JOB, partial checkpoints update the map; Debug lists solver rows from each non-partial checkpoint as they arrive.";
+    }
+    return "EV least-time planner running (chargers, stops, times) — usually the slowest stage on long trips.";
+  }, [loading, routePreviewPending, isPartialPlanSnapshot, plan]);
+
+  useEffect(() => {
+    if (!loading) {
+      setPlanElapsedSec(0);
+      return;
+    }
+    const t0 = Date.now();
+    const id = window.setInterval(() => {
+      setPlanElapsedSec(Math.floor((Date.now() - t0) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [loading]);
 
   /** ROUTING_UX_SPEC §4 — staged refinement (MVP: honest pipeline, not server-side loops). */
   const prefetchCandidatesEnv = useMemo(
@@ -178,8 +759,14 @@ export default function MapPage() {
     });
 
     map.addControl(new maplibregl.NavigationControl(), "top-right");
+    // Unblock marker effects immediately; style readiness still gates line-layer effects below.
+    setMapReady(true);
     map.once("load", () => {
       map.resize();
+      setMapReady(true);
+    });
+    map.on("styledata", () => {
+      if (map.isStyleLoaded()) setMapReady(true);
     });
     mapRef.current = map;
   }, []);
@@ -227,25 +814,244 @@ export default function MapPage() {
     const map = mapRef.current;
     if (!map) return;
 
-    // Clear Slice 4 preview layers whenever this effect runs (plan or no plan).
-    for (const lid of ["route-preview-line", "route-preview-line-halo"]) {
-      if (map.getLayer(lid)) map.removeLayer(lid);
-    }
-    if (map.getSource("route-preview-geojson")) map.removeSource("route-preview-geojson");
+    // Teal route-preview layers are managed in the next effect only. Do not
+    // clear them here: this effect also depends on routePreviewPending, and
+    // clearing preview layers without a routePreview dep change would erase
+    // the dashed line when preview fetch finishes.
 
-    // Clear previous visualization layers.
-    const layersToRemove = ["route-line", "route-line-halo"];
+    // Clear previous visualization layers (including legacy per–range-leg `route-line-0`…).
+    const layersToRemove = ["route-line", "route-line-halo", "stops-fallback-circle", "stops-fallback-sleep"];
+    for (let i = 0; i < RANGE_LEG_LAYER_COUNT; i++) {
+      layersToRemove.push(`route-line-${i}`);
+    }
     for (const lid of layersToRemove) {
       if (map.getLayer(lid)) map.removeLayer(lid);
     }
-    const sourcesToRemove = ["route-geojson"];
+    const sourcesToRemove = ["route-geojson", "stops-fallback-geojson"];
     for (const sid of sourcesToRemove) {
       if (map.getSource(sid)) map.removeSource(sid);
     }
 
-    // Markers: simplest MVP—remove any previous markers by rebuilding after each plan.
-    // (In production, keep marker refs to avoid churn.)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!plan) {
+      return;
+    }
+
+    if (plan.stops.length === 0) {
+      return;
+    }
+
+    // Route geometry.
+    // For normal trips (replan off) prefer merged `POST /route-preview` polylines over any per-leg geometry —
+    // solver legs may carry straight chord LineStrings that would incorrectly win here.
+    const previewPoly =
+      routePreview?.status === "ok" && routePreview.preview?.polyline?.coordinates?.length
+        ? routePreview.preview.polyline
+        : null;
+    const preferPreviewPolyline =
+      replanMode === "off" && previewPoly && previewPoly.coordinates.length >= 2;
+
+    const planJobPartialRoute = Boolean(
+      (plan.debug as Record<string, unknown> | undefined)?.planJobPartialRoute === true
+    );
+
+    const linePoints: Array<[number, number]> = [];
+    for (const leg of plan.legs ?? []) {
+      if (leg.geometry?.type === "LineString" && Array.isArray(leg.geometry.coordinates)) {
+        for (const c of leg.geometry.coordinates) {
+          linePoints.push([c[0], c[1]]);
+        }
+      }
+    }
+
+    const partialLegRoadGeometryFirst =
+      plan.status === "ok" &&
+      partialSnapshotLegGeometryDrivesSolidLine(plan.legs, loading, planJobPartialRoute) &&
+      linePoints.length >= 2;
+
+    /**
+     * Blocking `POST /plan`: avoid a flash of straight chords while merged `/route-preview` is loading.
+     * Async `planJob` + poll: `loading` stays true for minutes while partial plans stream — still show chord
+     * so the corridor is visible before preview polyline arrives (range-leg polyline split is debug-only).
+     */
+    const suppressChordUntilPreview =
+      replanMode === "off" &&
+      routePreviewPending &&
+      !previewPoly &&
+      !(loading && plan.status === "ok");
+
+    let routeCoords: Array<[number, number]> = [];
+    if (preferPreviewPolyline && previewPoly && !partialLegRoadGeometryFirst) {
+      const pm = routePreview?.preview?.partialPreviewMeta;
+      if (
+        pm &&
+        pm.loadedSegments < pm.totalSegments &&
+        plan.status === "ok"
+      ) {
+        const anchors = geographicAnchorsFromStops(plan.stops);
+        if (anchors.length === pm.totalSegments + 1) {
+          routeCoords = extendPartialPreviewPolyline(
+            previewPoly.coordinates as number[][],
+            pm,
+            anchors
+          );
+        } else {
+          routeCoords = previewPoly.coordinates as Array<[number, number]>;
+        }
+      } else {
+        routeCoords = previewPoly.coordinates as Array<[number, number]>;
+      }
+    } else if (partialLegRoadGeometryFirst) {
+      routeCoords = linePoints;
+    } else if (suppressChordUntilPreview) {
+      routeCoords = [];
+    } else if (linePoints.length >= 2) {
+      routeCoords = linePoints;
+    } else if (previewPoly && previewPoly.coordinates.length >= 2) {
+      routeCoords = previewPoly.coordinates as Array<[number, number]>;
+    } else {
+      const chord = plan.stops.map((s) => [s.coords.lon, s.coords.lat] as [number, number]);
+      if (chord.length >= 2) routeCoords = chord;
+    }
+
+    const rangeLegFc =
+      mapDebugRangeLegs() &&
+      plan.status === "ok" &&
+      plan.rangeLegs &&
+      plan.rangeLegs.length > 0
+        ? buildRangeLegRouteFeatureCollection(plan, routeCoords, plan.rangeLegs)
+        : null;
+
+    if (routeCoords.length >= 2) {
+      if (rangeLegFc && rangeLegFc.features.length > 0) {
+        map.addSource("route-geojson", {
+          type: "geojson",
+          data: rangeLegFc
+        });
+
+        map.addLayer({
+          id: "route-line-halo",
+          type: "line",
+          source: "route-geojson",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: { "line-color": "#000000", "line-width": 10, "line-opacity": 0.22 }
+        });
+        map.addLayer({
+          id: "route-line",
+          type: "line",
+          source: "route-geojson",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: { "line-color": COLORS.roadBlue, "line-width": 5 }
+        });
+      } else {
+        map.addSource("route-geojson", {
+          type: "geojson",
+          data: {
+            type: "Feature",
+            properties: {},
+            geometry: {
+              type: "LineString",
+              coordinates: routeCoords
+            }
+          }
+        });
+
+        map.addLayer({
+          id: "route-line-halo",
+          type: "line",
+          source: "route-geojson",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: { "line-color": "#000000", "line-width": 10, "line-opacity": 0.22 }
+        });
+        map.addLayer({
+          id: "route-line",
+          type: "line",
+          source: "route-geojson",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: { "line-color": COLORS.roadBlue, "line-width": 5 }
+        });
+      }
+    }
+
+    // Guaranteed-on path for stop rendering: ties stop symbols to the same effect that draws route layers.
+    const drawableStopsForLayer = plan.stops.filter(
+      (s) => hasFiniteCoords(s.coords) && (s.type !== "waypoint" || showWaypointMarkers)
+    );
+    if (drawableStopsForLayer.length > 0) {
+      const stopFeatures = drawableStopsForLayer.map((s) => {
+        const stopMeta = (s.meta ?? {}) as Record<string, unknown>;
+        const stopPowerKw = toNumberOrNull(
+          stopMeta.chargerMaxPowerKw ?? stopMeta.maxPowerKw
+        );
+        const sleepHasCharger = Boolean(stopMeta.chargerFound);
+        const color =
+          s.type === "start"
+            ? "#1b6ef3"
+            : s.type === "end"
+              ? "#9b59b6"
+              : s.type === "waypoint"
+                ? "#6c5ce7"
+                : s.type === "sleep"
+                  ? sleepHasCharger
+                    ? COLORS.sleepDarkRed
+                    : COLORS.sleepHotelBrightBlue
+                  : isLikelyL2Power(stopPowerKw)
+                    ? COLORS.l2Teal
+                    : COLORS.dcfcTeal;
+        return {
+          type: "Feature" as const,
+          properties: { stopType: s.type, color },
+          geometry: {
+            type: "Point" as const,
+            coordinates: [Number(s.coords.lon), Number(s.coords.lat)] as [number, number]
+          }
+        };
+      });
+      map.addSource("stops-fallback-geojson", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: stopFeatures }
+      });
+      map.addLayer({
+        id: "stops-fallback-circle",
+        type: "circle",
+        source: "stops-fallback-geojson",
+        filter: ["!=", ["get", "stopType"], "sleep"],
+        paint: {
+          "circle-radius": 6,
+          "circle-color": ["get", "color"],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1.2
+        }
+      });
+      map.addLayer({
+        id: "stops-fallback-sleep",
+        type: "symbol",
+        source: "stops-fallback-geojson",
+        filter: ["==", ["get", "stopType"], "sleep"],
+        layout: {
+          "text-field": "◆",
+          "text-size": 16,
+          "text-allow-overlap": true
+        },
+        paint: {
+          "text-color": ["get", "color"],
+          "text-halo-color": "#ffffff",
+          "text-halo-width": 1.1
+        }
+      });
+    }
+
+    map.resize();
+  }, [plan, routePreview, singleLegTrip, replanMode, routePreviewPending, loading, mapReady]);
+
+  /** Itinerary stop markers — separate from route layers so `routePreview` updates do not clear/rebuild pins. */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const lid of ["stops-fallback-circle", "stops-fallback-sleep"]) {
+      if (map.getLayer(lid)) map.removeLayer(lid);
+    }
+    if (map.getSource("stops-fallback-geojson")) map.removeSource("stops-fallback-geojson");
+
     if (!plan) {
       for (const m of markersRef.current) m.remove();
       markersRef.current = [];
@@ -258,24 +1064,35 @@ export default function MapPage() {
       return;
     }
 
-    // Clear markers from previous plan render.
     for (const m of markersRef.current) m.remove();
     markersRef.current = [];
 
-    // Fit view to stops.
-    const bounds = plan.stops.reduce(
+    const drawableStops = plan.stops.filter(
+      (s) => hasFiniteCoords(s.coords) && (s.type !== "waypoint" || showWaypointMarkers)
+    );
+    if (drawableStops.length === 0) return;
+
+    const bounds = drawableStops.reduce(
       (acc, s) => {
-        acc.minLon = Math.min(acc.minLon, s.coords.lon);
-        acc.maxLon = Math.max(acc.maxLon, s.coords.lon);
-        acc.minLat = Math.min(acc.minLat, s.coords.lat);
-        acc.maxLat = Math.max(acc.maxLat, s.coords.lat);
+        const lon = Number(s.coords.lon);
+        const lat = Number(s.coords.lat);
+        acc.minLon = Math.min(acc.minLon, lon);
+        acc.maxLon = Math.max(acc.maxLon, lon);
+        acc.minLat = Math.min(acc.minLat, lat);
+        acc.maxLat = Math.max(acc.maxLat, lat);
         return acc;
       },
       { minLon: 180, maxLon: -180, minLat: 90, maxLat: -90 }
     );
     const spanLon = bounds.maxLon - bounds.minLon;
     const spanLat = bounds.maxLat - bounds.minLat;
-    if (Number.isFinite(spanLon) && Number.isFinite(spanLat) && spanLon > 0 && spanLat > 0) {
+    if (
+      !autoFitConsumedRef.current &&
+      Number.isFinite(spanLon) &&
+      Number.isFinite(spanLat) &&
+      spanLon > 0 &&
+      spanLat > 0
+    ) {
       map.fitBounds(
         [
           [bounds.minLon, bounds.minLat],
@@ -283,79 +1100,51 @@ export default function MapPage() {
         ],
         { padding: 40, duration: 0 }
       );
+      autoFitConsumedRef.current = true;
     }
     map.resize();
 
-    // Route geometry.
-    // For normal trips (replan off) prefer merged `POST /route-preview` polylines over any per-leg geometry —
-    // solver legs may carry straight chord LineStrings that would incorrectly win here.
-    const previewPoly =
-      routePreview?.status === "ok" && routePreview.preview?.polyline?.coordinates?.length
-        ? routePreview.preview.polyline
-        : null;
-    const preferPreviewPolyline =
-      replanMode === "off" && previewPoly && previewPoly.coordinates.length >= 2;
-
-    /** Plan may return before route-preview; avoid a flash of straight chords while preview is loading. */
-    const suppressChordUntilPreview =
-      replanMode === "off" && routePreviewPending && !previewPoly;
-
-    const linePoints: Array<[number, number]> = [];
-    for (const leg of plan.legs) {
-      if (leg.geometry?.type === "LineString" && Array.isArray(leg.geometry.coordinates)) {
-        for (const c of leg.geometry.coordinates) {
-          linePoints.push([c[0], c[1]]);
-        }
+    for (const s of drawableStops) {
+      const stopMeta = (s.meta ?? {}) as Record<string, unknown>;
+      const stopPowerKw = toNumberOrNull(
+        stopMeta.chargerMaxPowerKw ?? stopMeta.maxPowerKw
+      );
+      const sleepHasCharger = Boolean(stopMeta.chargerFound);
+      if (s.type === "sleep") {
+        const marker = new maplibregl.Marker({
+          element: sleepStopMarkerElement(sleepHasCharger),
+          anchor: "center"
+        })
+          .setLngLat([Number(s.coords.lon), Number(s.coords.lat)])
+          .addTo(map);
+        marker.getElement().style.zIndex = "5";
+        markersRef.current.push(marker);
+        continue;
       }
+      const color =
+        s.type === "start"
+          ? "#1b6ef3"
+          : s.type === "end"
+            ? "#9b59b6"
+            : s.type === "waypoint"
+              ? "#6c5ce7"
+              : isLikelyL2Power(stopPowerKw)
+                ? COLORS.l2Teal
+                : COLORS.dcfcTeal;
+      const marker = new maplibregl.Marker({ color })
+        .setLngLat([Number(s.coords.lon), Number(s.coords.lat)])
+        .addTo(map);
+      marker.getElement().style.zIndex = "5";
+      markersRef.current.push(marker);
     }
 
-    let routeCoords: Array<[number, number]> = [];
-    if (preferPreviewPolyline && previewPoly) {
-      routeCoords = previewPoly.coordinates as Array<[number, number]>;
-    } else if (suppressChordUntilPreview) {
-      routeCoords = [];
-    } else if (linePoints.length >= 2) {
-      routeCoords = linePoints;
-    } else if (previewPoly && previewPoly.coordinates.length >= 2) {
-      routeCoords = previewPoly.coordinates as Array<[number, number]>;
-    } else {
-      const chord = plan.stops.map((s) => [s.coords.lon, s.coords.lat] as [number, number]);
-      if (chord.length >= 2) routeCoords = chord;
-    }
-
-    if (routeCoords.length >= 2) {
-      map.addSource("route-geojson", {
-        type: "geojson",
-        data: {
-          type: "Feature",
-          properties: {},
-          geometry: {
-            type: "LineString",
-            coordinates: routeCoords
-          }
-        }
-      });
-
-      map.addLayer({
-        id: "route-line-halo",
-        type: "line",
-        source: "route-geojson",
-        layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#000000", "line-width": 10, "line-opacity": 0.22 }
-      });
-      map.addLayer({
-        id: "route-line",
-        type: "line",
-        source: "route-geojson",
-        layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#0b7cff", "line-width": 5 }
-      });
-    }
-
-    // Candidate markers are handled in a separate effect (layers + toggles).
-
-    // Stop markers.
-    for (const s of plan.stops) {
+    // Canvas-layer fallback: keeps stop markers visible even if DOM markers fail in this runtime.
+    const stopFeatures = drawableStops.map((s) => {
+      const stopMeta = (s.meta ?? {}) as Record<string, unknown>;
+      const stopPowerKw = toNumberOrNull(
+        stopMeta.chargerMaxPowerKw ?? stopMeta.maxPowerKw
+      );
+      const sleepHasCharger = Boolean(stopMeta.chargerFound);
       const color =
         s.type === "start"
           ? "#1b6ef3"
@@ -364,14 +1153,60 @@ export default function MapPage() {
             : s.type === "waypoint"
               ? "#6c5ce7"
               : s.type === "sleep"
-                ? "#ff8c00"
-                : "#00b894"; // charge
-      const marker = new maplibregl.Marker({ color })
-        .setLngLat([s.coords.lon, s.coords.lat])
-        .addTo(map);
-      markersRef.current.push(marker);
-    }
-  }, [plan, routePreview, singleLegTrip, replanMode, routePreviewPending]);
+                ? sleepHasCharger
+                  ? COLORS.sleepDarkRed
+                  : COLORS.sleepHotelBrightBlue
+                : isLikelyL2Power(stopPowerKw)
+                  ? COLORS.l2Teal
+                  : COLORS.dcfcTeal;
+      return {
+        type: "Feature" as const,
+        properties: {
+          stopType: s.type,
+          color
+        },
+        geometry: {
+          type: "Point" as const,
+          coordinates: [Number(s.coords.lon), Number(s.coords.lat)] as [number, number]
+        }
+      };
+    });
+    map.addSource("stops-fallback-geojson", {
+      type: "geojson",
+      data: {
+        type: "FeatureCollection",
+        features: stopFeatures
+      }
+    });
+    map.addLayer({
+      id: "stops-fallback-circle",
+      type: "circle",
+      source: "stops-fallback-geojson",
+      filter: ["!=", ["get", "stopType"], "sleep"],
+      paint: {
+        "circle-radius": 6,
+        "circle-color": ["get", "color"],
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1.2
+      }
+    });
+    map.addLayer({
+      id: "stops-fallback-sleep",
+      type: "symbol",
+      source: "stops-fallback-geojson",
+      filter: ["==", ["get", "stopType"], "sleep"],
+      layout: {
+        "text-field": "◆",
+        "text-size": 16,
+        "text-allow-overlap": true
+      },
+      paint: {
+        "text-color": ["get", "color"],
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1.1
+      }
+    });
+  }, [plan, mapReady]);
 
   /** Slice 4: draw approximate road line from `POST /route-preview` until a successful plan replaces it. */
   useEffect(() => {
@@ -383,7 +1218,23 @@ export default function MapPage() {
     }
     if (map.getSource("route-preview-geojson")) map.removeSource("route-preview-geojson");
 
-    if (plan?.status === "ok") return;
+    /**
+     * Progressive `planJob` checkpoints use `status: "ok"` on partial snapshots — only drop the dashed preview once
+     * planning has finished (`loading` false), not on every partial route update.
+     */
+    if (plan?.status === "ok" && !loading) return;
+
+    const planJobPartial =
+      plan?.status === "ok" &&
+      (plan.debug as Record<string, unknown> | undefined)?.planJobPartialRoute === true;
+    if (
+      planJobPartial &&
+      loading &&
+      countLegLineStringCoordinates(plan.legs) >= PARTIAL_PLAN_ROAD_GEOMETRY_MIN_COORDS
+    ) {
+      /** Pillar 3b: solid line from partial `legs` geometry — avoid double draw with dashed preview. */
+      return;
+    }
 
     const poly = routePreview?.preview?.polyline;
     if (!poly?.coordinates?.length || poly.coordinates.length < 2) return;
@@ -409,7 +1260,7 @@ export default function MapPage() {
       source: "route-preview-geojson",
       layout: { "line-join": "round", "line-cap": "round" },
       paint: {
-        "line-color": "#0d9488",
+        "line-color": COLORS.roadBlue,
         "line-width": 4,
         "line-dasharray": [2, 2]
       }
@@ -430,7 +1281,13 @@ export default function MapPage() {
     }
     const spanLon = maxLon - minLon;
     const spanLat = maxLat - minLat;
-    if (Number.isFinite(spanLon) && Number.isFinite(spanLat) && spanLon > 0 && spanLat > 0) {
+    if (
+      !autoFitConsumedRef.current &&
+      Number.isFinite(spanLon) &&
+      Number.isFinite(spanLat) &&
+      spanLon > 0 &&
+      spanLat > 0
+    ) {
       map.fitBounds(
         [
           [minLon, minLat],
@@ -438,30 +1295,46 @@ export default function MapPage() {
         ],
         { padding: 40, duration: 0 }
       );
+      autoFitConsumedRef.current = true;
     }
     map.resize();
-  }, [plan, routePreview]);
+  }, [plan, routePreview, routePreviewPending, loading, mapReady]);
 
   const candidatesForMap: PlanTripCandidates | null =
-    plan?.status === "ok" && plan.candidates ? plan.candidates : candidatePreview;
+    plan?.status === "ok" && plan.candidates && !isPartialPlanSnapshot
+      ? plan.candidates
+      : candidatePreview;
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    for (const lid of ["candidates-fallback-chargers", "candidates-fallback-hotels"]) {
+      if (map.getLayer(lid)) map.removeLayer(lid);
+    }
+    if (map.getSource("candidates-fallback-geojson")) map.removeSource("candidates-fallback-geojson");
     for (const m of candidateMarkersRef.current) m.remove();
     candidateMarkersRef.current = [];
     if (!candidatesForMap) return;
 
     if (showChargerCandidates) {
       for (const c of candidatesForMap.chargers) {
+        if (!hasFiniteCoords(c.coords)) continue;
         const locked =
           singleLegTrip && lockedChargersByLeg[0]?.includes(c.id);
+        const l2 = isLikelyL2Power(toNumberOrNull(c.maxPowerKw));
         const marker = new maplibregl.Marker({
-          color: locked ? "#14532d" : "#2d8a5e"
+          color: locked
+            ? l2
+              ? "#4aa39f"
+              : "#225a56"
+            : l2
+              ? COLORS.l2Teal
+              : COLORS.dcfcTeal
         })
-          .setLngLat([c.coords.lon, c.coords.lat])
+          .setLngLat([Number(c.coords.lon), Number(c.coords.lat)])
           .addTo(map);
         const el = marker.getElement();
+        el.style.zIndex = "1";
         el.style.cursor = singleLegTrip ? "pointer" : "default";
         if (singleLegTrip) {
           el.addEventListener("click", (ev) => {
@@ -482,13 +1355,24 @@ export default function MapPage() {
     }
     if (showHotelCandidates) {
       for (const h of candidatesForMap.hotels) {
+        if (!hasFiniteCoords(h.coords)) continue;
         const sel = singleLegTrip && lockedHotelId === h.id;
+        const hasNearbyCharger = candidatesForMap.chargers.some(
+          (c) => haversineMiles(h.coords, c.coords) <= 400 / 1760
+        );
         const marker = new maplibregl.Marker({
-          color: sel ? "#922b21" : "#e17055"
+          color: sel
+            ? hasNearbyCharger
+              ? "#8a3d16"
+              : "#cf711f"
+            : hasNearbyCharger
+              ? COLORS.hotelDarkOrange
+              : COLORS.hotelLightOrange
         })
-          .setLngLat([h.coords.lon, h.coords.lat])
+          .setLngLat([Number(h.coords.lon), Number(h.coords.lat)])
           .addTo(map);
         const el = marker.getElement();
+        el.style.zIndex = "1";
         el.style.cursor = singleLegTrip ? "pointer" : "default";
         if (singleLegTrip) {
           el.addEventListener("click", (ev) => {
@@ -499,16 +1383,105 @@ export default function MapPage() {
         candidateMarkersRef.current.push(marker);
       }
     }
+
+    const chargerFeatures = showChargerCandidates
+      ? candidatesForMap.chargers
+          .filter((c) => hasFiniteCoords(c.coords))
+          .map((c) => {
+            const locked = singleLegTrip && lockedChargersByLeg[0]?.includes(c.id);
+            const l2 = isLikelyL2Power(toNumberOrNull(c.maxPowerKw));
+            const color = locked
+              ? l2
+                ? "#4aa39f"
+                : "#225a56"
+              : l2
+                ? COLORS.l2Teal
+                : COLORS.dcfcTeal;
+            return {
+              type: "Feature" as const,
+              properties: { kind: "charger", color },
+              geometry: {
+                type: "Point" as const,
+                coordinates: [Number(c.coords.lon), Number(c.coords.lat)] as [number, number]
+              }
+            };
+          })
+      : [];
+
+    const hotelFeatures = showHotelCandidates
+      ? candidatesForMap.hotels
+          .filter((h) => hasFiniteCoords(h.coords))
+          .map((h) => {
+            const sel = singleLegTrip && lockedHotelId === h.id;
+            const hasNearbyCharger = candidatesForMap.chargers.some(
+              (c) => hasFiniteCoords(c.coords) && haversineMiles(h.coords, c.coords) <= 400 / 1760
+            );
+            const color = sel
+              ? hasNearbyCharger
+                ? "#8a3d16"
+                : "#cf711f"
+              : hasNearbyCharger
+                ? COLORS.hotelDarkOrange
+                : COLORS.hotelLightOrange;
+            return {
+              type: "Feature" as const,
+              properties: { kind: "hotel", color },
+              geometry: {
+                type: "Point" as const,
+                coordinates: [Number(h.coords.lon), Number(h.coords.lat)] as [number, number]
+              }
+            };
+          })
+      : [];
+
+    const candidateFeatures = [...chargerFeatures, ...hotelFeatures];
+    if (candidateFeatures.length > 0) {
+      map.addSource("candidates-fallback-geojson", {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: candidateFeatures
+        }
+      });
+      map.addLayer({
+        id: "candidates-fallback-chargers",
+        type: "circle",
+        source: "candidates-fallback-geojson",
+        filter: ["==", ["get", "kind"], "charger"],
+        paint: {
+          "circle-radius": 5,
+          "circle-color": ["get", "color"],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1
+        }
+      });
+      map.addLayer({
+        id: "candidates-fallback-hotels",
+        type: "circle",
+        source: "candidates-fallback-geojson",
+        filter: ["==", ["get", "kind"], "hotel"],
+        paint: {
+          "circle-radius": 5,
+          "circle-color": ["get", "color"],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1
+        }
+      });
+    }
   }, [
     candidatesForMap,
     showChargerCandidates,
     showHotelCandidates,
     singleLegTrip,
     lockedChargersByLeg,
-    lockedHotelId
+    lockedHotelId,
+    mapReady
   ]);
 
   function humanizePlannerMessage(msg: string): string {
+    if (/Planner exceeded time limit \(\d+ms\)/i.test(msg)) {
+      return `${msg} — Segment-level planner timeout fired. Increase PLAN_SEGMENT_TIMEOUT_MS in the API .env if needed.`;
+    }
     if (/Valhalla fetch failed|Valhalla route|\/route\b/i.test(msg)) {
       return `${msg} — Start Valhalla locally or set VALHALLA_BASE_URL in the API .env (e.g. http://localhost:8002).`;
     }
@@ -517,13 +1490,17 @@ export default function MapPage() {
 
   function classifyPlanError(e: unknown, resp: Response | null): string {
     if (e instanceof DOMException && e.name === "AbortError") {
-      const ms = Number(process.env.NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS ?? 130000);
-      return `Planner request timed out after ${Math.round(ms / 1000)}s (NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS). Long multi-stop trips often need a higher limit and PLAN_TOTAL_TIMEOUT_MS on the API — see TESTING.md.`;
+      const ms = planClientTimeoutMs();
+      return `Planner request timed out after ${Math.round(ms / 1000)}s (NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS). No planner response body — no Debug solver list or provider timing.`;
     }
     if (e instanceof TypeError && /fetch|Load failed|NetworkError/i.test(String(e.message))) {
       return "Network error: could not reach the planner API. Check that the API is running and CORS allows this origin.";
     }
     if (resp?.status === 408) {
+      const raw = e instanceof Error ? e.message : "";
+      if (raw && /exceeded time limit|timed out/i.test(raw)) {
+        return humanizePlannerMessage(raw);
+      }
       return "The planner took too long (server time limit). Try a shorter route or retry later.";
     }
     if (resp?.status === 400 || resp?.status === 500 || resp?.status === 502) {
@@ -536,16 +1513,28 @@ export default function MapPage() {
 
   async function onPlanTrip() {
     clearMapPlanArtifacts();
+    autoFitConsumedRef.current = false;
     setLoading(true);
     setError(null);
     setCandidatePreview(null);
-    setRoutePreview(null);
-    /** Slice 2 `replanFrom.stopId` needs stops from the prior plan — capture before clearing UI state. */
+    if (replanMode !== "off") {
+      setRoutePreview(null);
+    }
+    /**
+     * Keep `routePreview` for normal trips (replan off): the merged polyline redraws after `clearMapPlanArtifacts`
+     * and stays visible while `/plan` runs (clearing here blanked the map until refetch). Replan modes clear above
+     * — we do not refetch merged `/route-preview` for those flows.
+     * Slice 2 `replanFrom.stopId` needs stops from the prior plan — capture before clearing UI state.
+     */
     const priorPlanForReplan = plan;
     setPlan(null);
-    const clientMs = Number(process.env.NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS ?? 130000);
+    setJobLiveSolverLegs(null);
+    setJobLiveRequestId(null);
+    setPlanJobCheckpointCount(null);
+    setSegmentPrefixRefinementCount(null);
+    const clientMs = planClientTimeoutMs();
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), clientMs);
+    let timer: number | undefined;
     let resp: Response | null = null;
     const prefetchCandidates =
       (process.env.NEXT_PUBLIC_PREFETCH_CANDIDATES ?? "true").toLowerCase() !== "false";
@@ -565,7 +1554,13 @@ export default function MapPage() {
         includeCandidates: true,
         ...(wps.length ? { waypoints: wps } : {}),
         ...(hasLocks ? { lockedChargersByLeg: locks } : {}),
-        ...(lockedHotelId ? { lockedHotelId } : {})
+        ...(lockedHotelId ? { lockedHotelId } : {}),
+        ...(wps.length >= 2 &&
+        !hasLocks &&
+        replanMode === "off" &&
+        optimizeWaypointOrder
+          ? { optimizeWaypointOrder: true }
+          : {})
       };
 
       const candidatesBody: Record<string, unknown> = {
@@ -622,15 +1617,17 @@ export default function MapPage() {
         prefetchRoutePreview && replanMode === "off" && previewChain.length >= 2;
       setRoutePreviewPending(shouldPrefetchPreview);
 
-      const routePreviewTimeoutMs = Number(
-        process.env.NEXT_PUBLIC_ROUTE_PREVIEW_CLIENT_TIMEOUT_MS ?? 180000
-      );
+      const routePreviewTimeoutMs = routePreviewClientTimeoutMs();
       const routePreviewAbort = abortSignalAfterMs(routePreviewTimeoutMs);
 
       /** Run in parallel with /plan; single-leg = one request, waypoints = one request per hop (merged). */
       const routePreviewPromise: Promise<RoutePreviewApiResponse | null> =
         shouldPrefetchPreview
-          ? fetchMergedRoutePreview(apiBase, previewChain, routePreviewAbort)
+          ? fetchMergedRoutePreview(apiBase, previewChain, routePreviewAbort, (partial) => {
+              if (routePreviewGen !== routePreviewRequestGenRef.current) return;
+              setRoutePreview(partial);
+              setRoutePreviewPending(false);
+            })
           : Promise.resolve(null);
 
       /** Failsafe: if fetches hang without rejecting, still clear pending so the map can draw chord/leg geometry. */
@@ -642,6 +1639,7 @@ export default function MapPage() {
       void routePreviewPromise
         .then((previewJson) => {
           if (routePreviewGen !== routePreviewRequestGenRef.current) return;
+          /** Only apply successful merges; never clear here — a late `null` after partials must not wipe the map. */
           if (previewJson) setRoutePreview(previewJson);
         })
         .catch(() => {
@@ -653,33 +1651,434 @@ export default function MapPage() {
           setRoutePreviewPending(false);
         });
 
-      resp = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      });
-      let json: PlanTripResponse;
-      try {
-        json = (await resp.json()) as PlanTripResponse;
-      } catch {
-        throw new Error(`Invalid response from planner (HTTP ${resp.status}).`);
-      }
+      const usePlanJob = planUseJob();
+      if (usePlanJob) {
+        body.planJob = true;
+        setJobLiveSolverLegs([]);
+        setJobLiveRequestId(null);
 
-      if (!resp.ok) {
+        resp = await fetch(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+
+        let accepted: {
+          jobId?: string;
+          requestId?: string;
+          responseVersion?: string;
+          eventsUrl?: string;
+        };
+        try {
+          accepted = (await resp.json()) as typeof accepted;
+        } catch {
+          throw new Error(`Invalid response from planner (HTTP ${resp.status}).`);
+        }
+
+        if (!resp.ok) {
+          const errBody = accepted as unknown as PlanTripResponse;
+          setPlan(errBody?.requestId ? errBody : null);
+          throw new Error(errBody?.message ?? `Planning failed (HTTP ${resp.status})`);
+        }
+
+        if (resp.status !== 202) {
+          throw new Error(`Expected HTTP 202 for planJob, got ${resp.status}`);
+        }
+        if (!accepted.jobId) {
+          throw new Error("planJob response missing jobId");
+        }
+        setJobLiveRequestId(accepted.requestId ?? accepted.jobId ?? "plan-job");
+
+        type PlanJobPollJson = {
+          status: "running" | "complete" | "error";
+          checkpoints?: Array<{ t?: string | number; legIndex: number; attempt: Record<string, unknown> }>;
+          result?: PlanTripResponse;
+          message?: string;
+          debug?: Record<string, unknown>;
+          lastPartialSnapshot?: {
+            stops?: ItineraryStop[];
+            legs?: ItineraryLeg[];
+            rangeLegs?: RangeLegSummary[];
+            legIndex?: number;
+            stopsCount?: number;
+            t?: number;
+          };
+        };
+
+        const applyTerminalComplete = (pjResult: PlanTripResponse) => {
+          setJobLiveSolverLegs(null);
+          setJobLiveRequestId(null);
+          setPlanJobCheckpointCount(null);
+          setSegmentPrefixRefinementCount(null);
+          if (pjResult.status === "ok") setPlan(pjResult);
+          if (pjResult.status === "ok" && pjResult.candidates) {
+            setCandidatePreview(null);
+          }
+          if (pjResult.status !== "ok") {
+            setPlan((cur) => (cur ? cur : pjResult));
+            throw new Error(pjResult.message ?? "Planning failed");
+          }
+        };
+
+        const applyTerminalError = (pj: PlanJobPollJson) => {
+          setJobLiveSolverLegs(null);
+          setJobLiveRequestId(null);
+          setPlanJobCheckpointCount(null);
+          setSegmentPrefixRefinementCount(null);
+          const msg = pj.message ?? "Planning failed";
+          if (
+            pj.lastPartialSnapshot &&
+            Array.isArray(pj.lastPartialSnapshot.stops) &&
+            Array.isArray(pj.lastPartialSnapshot.legs)
+          ) {
+            const partialFromError = planTripResponseFromPartialSnapshot(accepted, {
+              stops: pj.lastPartialSnapshot.stops,
+              legs: pj.lastPartialSnapshot.legs,
+              rangeLegs: Array.isArray(pj.lastPartialSnapshot.rangeLegs)
+                ? pj.lastPartialSnapshot.rangeLegs
+                : undefined
+            });
+            setPlan((cur) =>
+              cur && Array.isArray(cur.stops) && cur.stops.length >= partialFromError.stops.length
+                ? cur
+                : partialFromError
+            );
+          }
+          const errPlan: PlanTripResponse = {
+            requestId: accepted.requestId ?? accepted.jobId ?? "unknown",
+            responseVersion: accepted.responseVersion ?? "v2-1",
+            status: "error",
+            message: msg,
+            stops: [],
+            legs: [],
+            ...(pj.debug && Object.keys(pj.debug).length > 0 ? { debug: pj.debug } : {})
+          };
+          setPlan((cur) => {
+            if (!cur) return errPlan;
+            const mergedDebug = {
+              ...(((cur.debug ?? {}) as Record<string, unknown>) ?? {}),
+              ...(pj.debug ?? {}),
+              planJobTerminalError: true,
+              planJobTerminalErrorMessage: msg
+            };
+            return {
+              ...cur,
+              message: msg,
+              debug: mergedDebug
+            };
+          });
+          throw new Error(msg);
+        };
+
+        const pollUrl = `${apiBase.replace(/\/$/, "")}/plan/jobs/${accepted.jobId}`;
+        const useSse = planJobUseSse() && typeof EventSource !== "undefined";
+
+        if (useSse) {
+          await new Promise<void>((resolve, reject) => {
+            const eventsUrl = resolvePlanJobEventsUrl(apiBase, accepted.jobId!, accepted.eventsUrl);
+            const acc: PlanJobCheckpointRow[] = [];
+            let idleDeadline = Date.now() + clientMs;
+            let lastCheckpointSig = "";
+            let progressiveBestStops = 0;
+            let completed = false;
+            let reconnectAttempt = 0;
+            let reconnectTimer: number | null = null;
+            let watchdog: number | null = null;
+            let currentEs: EventSource | null = null;
+
+            const bumpIdle = () => {
+              idleDeadline = Date.now() + clientMs;
+            };
+
+            const clearReconnectTimer = () => {
+              if (reconnectTimer != null) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+              }
+            };
+
+            const stopWatchdog = () => {
+              if (watchdog != null) {
+                clearInterval(watchdog);
+                watchdog = null;
+              }
+            };
+
+            const closeEs = () => {
+              if (currentEs) {
+                currentEs.close();
+                currentEs = null;
+              }
+            };
+
+            const fullCleanup = () => {
+              clearReconnectTimer();
+              stopWatchdog();
+              closeEs();
+            };
+
+            const abortHandler = () => {
+              if (completed) return;
+              fullCleanup();
+              controller.signal.removeEventListener("abort", abortHandler);
+              reject(new DOMException("Aborted", "AbortError"));
+            };
+            controller.signal.addEventListener("abort", abortHandler);
+
+            const startWatchdog = () => {
+              stopWatchdog();
+              watchdog = window.setInterval(() => {
+                if (controller.signal.aborted) {
+                  fullCleanup();
+                  controller.signal.removeEventListener("abort", abortHandler);
+                  reject(new DOMException("Aborted", "AbortError"));
+                  return;
+                }
+                if (!completed && Date.now() > idleDeadline) {
+                  fullCleanup();
+                  controller.signal.removeEventListener("abort", abortHandler);
+                  setJobLiveSolverLegs(null);
+                  setJobLiveRequestId(null);
+                  setPlanJobCheckpointCount(null);
+                  setSegmentPrefixRefinementCount(null);
+                  reject(
+                    new Error(
+                      `Planner SSE idle-timeout after ${Math.round(
+                        clientMs / 1000
+                      )}s with no checkpoints or heartbeats (NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS).`
+                    )
+                  );
+                }
+              }, 500);
+            };
+
+            const attachEventSource = () => {
+              bumpIdle();
+              startWatchdog();
+              const es = new EventSource(eventsUrl);
+              currentEs = es;
+
+              es.onmessage = (ev) => {
+                if (completed) return;
+                let j: unknown;
+                try {
+                  j = JSON.parse(ev.data);
+                } catch {
+                  return;
+                }
+                if (!j || typeof j !== "object") return;
+                const o = j as Record<string, unknown>;
+                if (o.type === "heartbeat") {
+                  bumpIdle();
+                  return;
+                }
+                if (o.type === "checkpoint" && o.checkpoint && typeof o.checkpoint === "object") {
+                  const row = o.checkpoint as PlanJobCheckpointRow;
+                  acc.push(row);
+                  setPlanJobCheckpointCount(acc.length);
+                  setSegmentPrefixRefinementCount(countSegmentPrefixRefinementRows(acc));
+                  const newest = acc[acc.length - 1];
+                  const newestSig = `${acc.length}:${newest.t ?? ""}:${newest.legIndex}:${
+                    newest.attempt?.kind ?? ""
+                  }`;
+                  if (newestSig !== lastCheckpointSig) {
+                    lastCheckpointSig = newestSig;
+                    bumpIdle();
+                  }
+                  const r = applyPlanJobCheckpointRows(
+                    acc,
+                    accepted,
+                    progressiveBestStops,
+                    setPlan,
+                    setJobLiveSolverLegs
+                  );
+                  progressiveBestStops = r.progressiveBestStops;
+                } else if (o.type === "complete" && o.result) {
+                  completed = true;
+                  clearReconnectTimer();
+                  fullCleanup();
+                  controller.signal.removeEventListener("abort", abortHandler);
+                  try {
+                    applyTerminalComplete(o.result as PlanTripResponse);
+                    resolve();
+                  } catch (e) {
+                    reject(e);
+                  }
+                } else if (o.type === "error") {
+                  completed = true;
+                  clearReconnectTimer();
+                  fullCleanup();
+                  controller.signal.removeEventListener("abort", abortHandler);
+                  try {
+                    applyTerminalError({
+                      status: "error",
+                      message: typeof o.message === "string" ? o.message : undefined,
+                      debug:
+                        o.debug && typeof o.debug === "object"
+                          ? (o.debug as Record<string, unknown>)
+                          : undefined,
+                      lastPartialSnapshot: o.lastPartialSnapshot as PlanJobPollJson["lastPartialSnapshot"]
+                    });
+                  } catch (e) {
+                    reject(e);
+                  }
+                }
+              };
+
+              es.onerror = () => {
+                if (completed) return;
+                es.close();
+                if (currentEs === es) currentEs = null;
+                stopWatchdog();
+                if (reconnectAttempt >= PLAN_JOB_SSE_MAX_RECONNECTS) {
+                  clearReconnectTimer();
+                  controller.signal.removeEventListener("abort", abortHandler);
+                  setJobLiveSolverLegs(null);
+                  setJobLiveRequestId(null);
+                  setPlanJobCheckpointCount(null);
+                  setSegmentPrefixRefinementCount(null);
+                  reject(
+                    new Error(
+                      `Plan job SSE failed after ${PLAN_JOB_SSE_MAX_RECONNECTS} reconnect attempts`
+                    )
+                  );
+                  return;
+                }
+                reconnectAttempt += 1;
+                const delay = planJobSseReconnectDelayMs(reconnectAttempt);
+                clearReconnectTimer();
+                reconnectTimer = window.setTimeout(() => {
+                  reconnectTimer = null;
+                  if (controller.signal.aborted || completed) return;
+                  acc.length = 0;
+                  progressiveBestStops = 0;
+                  lastCheckpointSig = "";
+                  setPlanJobCheckpointCount(0);
+                  setSegmentPrefixRefinementCount(0);
+                  attachEventSource();
+                }, delay);
+              };
+            };
+
+            attachEventSource();
+          });
+        } else {
+          let idleDeadline = Date.now() + clientMs;
+          let completed = false;
+          let lastCheckpointSig = "";
+          let progressiveBestStops = 0;
+
+          while (Date.now() < idleDeadline && !completed) {
+            if (controller.signal.aborted) {
+              setJobLiveSolverLegs(null);
+              setJobLiveRequestId(null);
+              setPlanJobCheckpointCount(null);
+              setSegmentPrefixRefinementCount(null);
+              throw new DOMException("Aborted", "AbortError");
+            }
+
+            const pr = await fetch(pollUrl, { signal: controller.signal });
+            if (!pr.ok) {
+              setJobLiveSolverLegs(null);
+              setJobLiveRequestId(null);
+              setPlanJobCheckpointCount(null);
+              setSegmentPrefixRefinementCount(null);
+              if (pr.status === 404) {
+                throw new Error("Plan job expired or unknown (404). Retry Plan Trip.");
+              }
+              throw new Error(`Poll failed (HTTP ${pr.status})`);
+            }
+
+            let pj: PlanJobPollJson;
+            try {
+              pj = (await pr.json()) as PlanJobPollJson;
+            } catch {
+              throw new Error("Invalid JSON from plan job poll.");
+            }
+
+            if (Array.isArray(pj.checkpoints) && pj.checkpoints.length > 0) {
+              setPlanJobCheckpointCount(pj.checkpoints.length);
+              setSegmentPrefixRefinementCount(
+                countSegmentPrefixRefinementRows(pj.checkpoints as PlanJobCheckpointRow[])
+              );
+              const newest = pj.checkpoints[pj.checkpoints.length - 1];
+              const newestSig = `${pj.checkpoints.length}:${newest.t ?? ""}:${newest.legIndex}:${
+                newest.attempt?.kind ?? ""
+              }`;
+              if (newestSig !== lastCheckpointSig) {
+                lastCheckpointSig = newestSig;
+                idleDeadline = Date.now() + clientMs;
+              }
+              const r = applyPlanJobCheckpointRows(
+                pj.checkpoints as PlanJobCheckpointRow[],
+                accepted,
+                progressiveBestStops,
+                setPlan,
+                setJobLiveSolverLegs
+              );
+              progressiveBestStops = r.progressiveBestStops;
+            }
+
+            if (pj.status === "complete" && pj.result) {
+              applyTerminalComplete(pj.result);
+              completed = true;
+              break;
+            }
+
+            if (pj.status === "error") {
+              applyTerminalError(pj);
+            }
+
+            await new Promise((r) => setTimeout(r, 250));
+          }
+
+          if (!completed) {
+            setJobLiveSolverLegs(null);
+            setJobLiveRequestId(null);
+            setPlanJobCheckpointCount(null);
+            setSegmentPrefixRefinementCount(null);
+            throw new Error(
+              `Planner poll idle-timeout after ${Math.round(
+                clientMs / 1000
+              )}s with no new checkpoints (NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS).`
+            );
+          }
+        }
+      } else {
+        timer = window.setTimeout(() => controller.abort(), clientMs);
+        resp = await fetch(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        let json: PlanTripResponse;
+        try {
+          json = (await resp.json()) as PlanTripResponse;
+        } catch {
+          throw new Error(`Invalid response from planner (HTTP ${resp.status}).`);
+        }
+
+        if (!resp.ok) {
+          setPlan(json);
+          throw new Error(json.message ?? `Planning failed (HTTP ${resp.status})`);
+        }
         setPlan(json);
-        throw new Error(json.message ?? `Planning failed (HTTP ${resp.status})`);
-      }
-      setPlan(json);
-      if (json.status === "ok" && json.candidates) {
-        setCandidatePreview(null);
+        if (json.status === "ok" && json.candidates) {
+          setCandidatePreview(null);
+        }
       }
     } catch (e) {
       setRoutePreviewPending(false);
+      setJobLiveSolverLegs(null);
+      setJobLiveRequestId(null);
+      setPlanJobCheckpointCount(null);
+      setSegmentPrefixRefinementCount(null);
       setError(classifyPlanError(e, resp));
     } finally {
       if (pendingFailsafeTimer !== undefined) window.clearTimeout(pendingFailsafeTimer);
-      window.clearTimeout(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
       setLoading(false);
     }
   }
@@ -704,10 +2103,11 @@ export default function MapPage() {
   })();
 
   const planRefinementStage: RefinementStage = (() => {
-    if (plan?.status === "ok") return "done";
-    if (error || plan?.status === "error") return "error";
     if (!hasPlanActivity) return "idle";
+    if (error || plan?.status === "error") return "error";
+    // Partial `planJob` snapshots use `status: ok` before the job finishes — keep stage 3 active until `loading` clears.
     if (loading) return "active";
+    if (plan?.status === "ok") return "done";
     return "pending";
   })();
 
@@ -725,10 +2125,10 @@ export default function MapPage() {
       <div style={{ padding: 16, borderRight: "1px solid #e5e5e5", overflow: "auto", minHeight: 0 }}>
         <h1 style={{ margin: 0, fontSize: 20 }}>EV Travel Planner (v2)</h1>
         <p style={{ margin: "6px 0 0 0", fontSize: 12, color: "#555" }}>
-          Along-route charger + hotel candidates appear as green / coral markers (Slice 3: requested early via{" "}
+          Along-route charger + hotel candidates appear as teal / coral markers (Slice 3: requested early via{" "}
           <code>POST /candidates</code> in parallel with <code>/plan</code> unless{" "}
           <code>NEXT_PUBLIC_PREFETCH_CANDIDATES=false</code>). <strong>Slice 4:</strong> normal trips (start + optional
-          waypoints + end) fetch <code>POST /route-preview</code> per hop and merge (teal dashed line + horizon turn list) unless{" "}
+          waypoints + end) fetch <code>POST /route-preview</code> per hop and merge (blue dashed initial route + horizon turn list) unless{" "}
           <code>NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW=false</code>. Itinerary stops use blue / purple / orange / green.
         </p>
         <p style={{ margin: "8px 0 0 0", fontSize: 12, color: "#555" }}>
@@ -748,9 +2148,10 @@ export default function MapPage() {
         >
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Progressive refinement (ROUTING_UX_SPEC §4)</div>
           <p style={{ margin: "0 0 8px 0", fontSize: 11, color: "#666" }}>
-            Stages: road corridor → along-route pins → full EV itinerary. This MVP shows the pipeline; per-anchor
-            geometry loops are future work. Waypoint <strong>order</strong> follows your input (automated reorder is not
-            applied yet).
+            Stages: road corridor → along-route pins → full EV itinerary. With <strong>Optimize waypoint order</strong>{" "}
+            (≥2 waypoints, no locks), the server may reorder stops to shorten a haversine proxy before planning. With{" "}
+            <code>NEXT_PUBLIC_PLAN_USE_JOB</code>, stage 3 shows checkpoint counts and{" "}
+            <strong>segment-hop refinements</strong> as the solver commits each timed hop toward the next charge or end.
           </p>
           {(() => {
             const roadSub =
@@ -765,10 +2166,33 @@ export default function MapPage() {
               candidatesRefinementStage === "skipped"
                 ? "Skipped: NEXT_PUBLIC_PREFETCH_CANDIDATES=false."
                 : undefined;
+            const planJobCpSuffix =
+              planUseJob() &&
+              loading &&
+              planJobCheckpointCount != null &&
+              planJobCheckpointCount > 0
+                ? ` · ${planJobCheckpointCount} checkpoint${
+                    planJobCheckpointCount === 1 ? "" : "s"
+                  } from server${
+                    segmentPrefixRefinementCount != null && segmentPrefixRefinementCount > 0
+                      ? ` · ${segmentPrefixRefinementCount} segment-hop refinement${
+                          segmentPrefixRefinementCount === 1 ? "" : "s"
+                        }`
+                      : ""
+                  }`
+                : "";
+            const planSub =
+              loading && planRefinementStage === "active"
+                ? planUseJob()
+                  ? isPartialPlanSnapshot && plan && plan.stops.length > 0
+                    ? `Elapsed ${formatElapsedMmSs(planElapsedSec)} — partial itinerary visible (${plan.stops.length} stops from latest checkpoint; not final). More checkpoints may follow; route line uses chord or preview until the job completes.${planJobCpSuffix}`
+                    : `Elapsed ${formatElapsedMmSs(planElapsedSec)} — EV solver still running (async plan job). Route preview + pins are separate requests; Debug shows checkpoint solver rows as they arrive.${planJobCpSuffix}`
+                  : `Elapsed ${formatElapsedMmSs(planElapsedSec)} — EV solver still running. Route preview + pins are separate requests; the itinerary and Debug (staggered solver rows) appear only when this step finishes (blocking POST /plan — not live).`
+                : undefined;
             const rows: Array<{ label: string; stage: RefinementStage; sub?: string }> = [
               { label: "1. Road corridor (Valhalla /route-preview)", stage: roadRefinementStage, sub: roadSub },
               { label: "2. Along-route candidate pins (/candidates)", stage: candidatesRefinementStage, sub: candSub },
-              { label: "3. EV itinerary (POST /plan)", stage: planRefinementStage }
+              { label: "3. EV itinerary (POST /plan)", stage: planRefinementStage, sub: planSub }
             ];
             return rows.map((r) => {
               const st = refinementStageStyle(r.stage);
@@ -796,6 +2220,90 @@ export default function MapPage() {
               );
             });
           })()}
+          {(() => {
+            const wopt = (plan?.debug as Record<string, unknown> | undefined)?.waypointOrderOptimization as
+              | { applied?: boolean; userOrder?: string[]; chosenOrder?: string[] }
+              | undefined;
+            if (!wopt?.applied || !Array.isArray(wopt.userOrder) || !Array.isArray(wopt.chosenOrder)) return null;
+            return (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: "8px 10px",
+                  background: "#eff6ff",
+                  border: "1px solid #93c5fd",
+                  borderRadius: 6,
+                  fontSize: 11,
+                  color: "#1e3a5f",
+                  lineHeight: 1.45
+                }}
+              >
+                <strong>Waypoint order optimized</strong> (haversine leg-sum proxy): your order{" "}
+                <span style={{ opacity: 0.9 }}>{wopt.userOrder.join(" → ")}</span> → planner used{" "}
+                <span style={{ fontWeight: 600 }}>{wopt.chosenOrder.join(" → ")}</span>.
+              </div>
+            );
+          })()}
+          {loading && plan === null ? (
+            <div
+              style={{
+                marginTop: 10,
+                padding: "10px 12px",
+                background: "#fffbeb",
+                border: "1px solid #fcd34d",
+                borderRadius: 6,
+                fontSize: 11,
+                color: "#78350f",
+                lineHeight: 1.45
+              }}
+            >
+              <strong>Typical timing:</strong> road preview ~2s, charger/hotel pins ~10–15s (parallel prefetches).{" "}
+              {planUseJob() ? (
+                <>
+                  With <code>NEXT_PUBLIC_PLAN_USE_JOB=true</code>, the map uses an async plan job:{" "}
+                  <strong>Debug — plan-job checkpoints</strong> lists solver rows as checkpoints arrive over SSE{" "}
+                  <code>/events</code> (or poll);
+                  the full itinerary and complete <code>debug.*</code> appear when the job finishes (often 2+ minutes on
+                  long EV solves). See <strong>TESTING.md</strong>.
+                </>
+              ) : (
+                <>
+                  <strong>Solver attempts in Debug</strong> (<code>debug.segmentsAttempted</code>) and the itinerary
+                  below ship <strong>with</strong> the blocking <code>POST /plan</code> body — often 2+ minutes on long
+                  cross-country EV solves. The browser does not receive each attempt during the solve; after the response
+                  returns, attempts are revealed in order (staggered readout — see{" "}
+                  <strong>Solver attempts (staggered readout)</strong> below).
+                </>
+              )}
+            </div>
+          ) : null}
+          {loading && isPartialPlanSnapshot && plan && plan.stops.length > 0 ? (
+            <div
+              style={{
+                marginTop: 10,
+                padding: "10px 12px",
+                background: "#ecfdf5",
+                border: "1px solid #6ee7b7",
+                borderRadius: 6,
+                fontSize: 11,
+                color: "#064e3b",
+                lineHeight: 1.45
+              }}
+              role="status"
+              aria-live="polite"
+            >
+              <strong>Partial itinerary (real checkpoints)</strong> — {plan.stops.length} stop
+              {plan.stops.length === 1 ? "" : "s"} on the map and in the list below
+              {planJobCheckpointCount != null && planJobCheckpointCount > 0 ? (
+                <>
+                  . <strong>{planJobCheckpointCount}</strong> server checkpoint
+                  {planJobCheckpointCount === 1 ? "" : "s"} received so far
+                </>
+              ) : null}
+              . This is <strong>server data</strong>, not a simulated progress bar. Stops and route may grow as the
+              planner finishes; final totals and <code>debug.*</code> arrive when the job completes.
+            </div>
+          ) : null}
         </div>
 
         <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
@@ -901,6 +2409,32 @@ export default function MapPage() {
             />
           </label>
 
+          {parsedWaypoints.length >= 2 && replanMode === "off" ? (
+            <label
+              style={{
+                display: "flex",
+                gap: 8,
+                alignItems: "flex-start",
+                fontSize: 12,
+                color: "#374151",
+                lineHeight: 1.45
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={optimizeWaypointOrder}
+                onChange={(e) => setOptimizeWaypointOrder(e.target.checked)}
+                disabled={lockedChargersByLeg.some((r) => r.length > 0) || Boolean(lockedHotelId)}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                <strong>Optimize waypoint order</strong> — server minimizes straight-line leg distance (time-bounded)
+                before EV planning. Off when locks or replan are active. Default:{" "}
+                <code>NEXT_PUBLIC_OPTIMIZE_WAYPOINT_ORDER</code> (build-time).
+              </span>
+            </label>
+          ) : null}
+
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 13 }}>
             <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input
@@ -919,10 +2453,114 @@ export default function MapPage() {
               Show hotel candidates
             </label>
           </div>
+          {!defaultShowCandidates || !defaultShowWaypoints ? (
+            <div
+              style={{
+                marginTop: 6,
+                fontSize: 12,
+                color: "#6b7280"
+              }}
+            >
+              Map defaults are currently reducing debug marker density ({!defaultShowCandidates
+                ? "candidates hidden by default"
+                : null}
+              {!defaultShowCandidates && !defaultShowWaypoints ? ", " : null}
+              {!defaultShowWaypoints ? "auto-waypoint markers hidden by default" : null}
+              ). You can still enable candidate markers with the toggles above, or override via{" "}
+              <code>NEXT_PUBLIC_MAP_SHOW_CANDIDATES_DEFAULT</code> /{" "}
+              <code>NEXT_PUBLIC_MAP_SHOW_WAYPOINTS_DEFAULT</code>.
+            </div>
+          ) : null}
+
+          <div
+            style={{
+              marginTop: 8,
+              padding: "8px 10px",
+              border: "1px solid #e5e7eb",
+              borderRadius: 6,
+              background: "#fafafa",
+              fontSize: 12
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 6, color: "#374151" }}>Map legend</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", color: "#4b5563" }}>
+              {(
+                [
+                  { label: "Hotel", color: COLORS.hotelLightOrange },
+                  { label: "Hotel + nearby charger", color: COLORS.hotelDarkOrange },
+                  {
+                    label: "Sleep hotel (no charger)",
+                    color: COLORS.sleepHotelBrightBlue,
+                    diamond: true
+                  },
+                  {
+                    label: "Sleep hotel + charger",
+                    color: COLORS.sleepDarkRed,
+                    diamond: true
+                  },
+                  { label: "DCFC", color: COLORS.dcfcTeal },
+                  { label: "L2 charger", color: COLORS.l2Teal },
+                  { label: "Road", color: COLORS.roadBlue }
+                ] as const
+              ).map((item) => (
+                <span key={item.label} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  {"diamond" in item && item.diamond ? (
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        width: 10,
+                        height: 10,
+                        boxSizing: "border-box",
+                        background: item.color,
+                        transform: "rotate(45deg)",
+                        borderRadius: 2,
+                        border: "1.5px solid rgba(255, 255, 255, 0.92)",
+                        boxShadow: "0 0 0 1px rgba(0,0,0,0.12)"
+                      }}
+                    />
+                  ) : (
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: "50%",
+                        background: item.color,
+                        border: "1px solid rgba(0,0,0,0.2)"
+                      }}
+                    />
+                  )}
+                  {item.label}
+                </span>
+              ))}
+            </div>
+          </div>
 
           <button onClick={onPlanTrip} disabled={loading} style={{ padding: 10 }}>
-            {loading ? "Planning..." : "Plan Trip"}
+            {loading ? planningButtonLabel : "Plan Trip"}
           </button>
+          {loading ? (
+            <div
+              style={{
+                marginTop: 6,
+                padding: "8px 10px",
+                background: "#eff6ff",
+                border: "1px solid #bfdbfe",
+                borderRadius: 6,
+                fontSize: 12,
+                color: "#1e3a5f"
+              }}
+              role="status"
+              aria-live="polite"
+            >
+              <strong>{formatElapsedMmSs(planElapsedSec)}</strong> elapsed · {planningLoadingHelp ?? "—"}
+              <div style={{ marginTop: 6, fontSize: 11, color: "#4b5563" }}>
+                This is a <strong>liveness</strong> clock (the tab is updating). Client aborts after{" "}
+                <strong>{Math.round(planClientTimeoutMs() / 1000)}s</strong> of no progress in plan-job mode to avoid a
+                stuck tab; API segment solves use <code>PLAN_SEGMENT_TIMEOUT_MS</code>. See <strong>TESTING.md</strong>.
+              </div>
+            </div>
+          ) : null}
           {singleLegTrip ? (
             <div style={{ fontSize: 12, color: "#444" }}>
               <div>
@@ -947,6 +2585,41 @@ export default function MapPage() {
           </div>
         ) : null}
 
+        {error && /Planner request timed out after/i.test(error) ? (
+          <div
+            style={{
+              marginTop: 10,
+              padding: 12,
+              background: "#fefce8",
+              border: "1px solid #fde047",
+              borderRadius: 6,
+              fontSize: 12,
+              color: "#713f12"
+            }}
+          >
+            <strong>Why Debug has no provider timing, full solver list, or final itinerary</strong>
+            <p style={{ margin: "8px 0 0 0", lineHeight: 1.45 }}>
+              <code>debug.providerCalls</code>, full <code>debug.segmentsAttempted</code>, and the stop list only exist
+              in the <strong>finished</strong> plan response. With the default <strong>blocking</strong>{" "}
+              <code>POST /plan</code>, aborting discards that whole body. If you use{" "}
+              <code>NEXT_PUBLIC_PLAN_USE_JOB</code>, you may have seen live <strong>checkpoint</strong> rows in{" "}
+              <strong>Debug — plan-job checkpoints</strong> before abort; <code>debug.providerCalls</code> still arrives
+              only in the final <code>result</code>.
+            </p>
+            <p style={{ margin: "8px 0 0 0", lineHeight: 1.45 }}>
+              <strong>Road preview (teal line)</strong> uses separate <code>POST /route-preview</code> calls and can
+              still appear above. If you see <strong>no</strong> approximate route after a timeout, Valhalla may be
+              down/slow, or <code>NEXT_PUBLIC_ROUTE_PREVIEW_CLIENT_TIMEOUT_MS</code> is too low for multi-hop merges —
+              see <strong>TESTING.md</strong> and <strong>VALHALLA.md</strong>.
+            </p>
+            <p style={{ margin: "8px 0 0 0", lineHeight: 1.45 }}>
+              Long multi-stop trips often need <strong>5–10+ minutes</strong>. Raise{" "}
+              <code>NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS</code> and <code>PLAN_TOTAL_TIMEOUT_MS</code> together (see{" "}
+              <strong>TESTING.md</strong>), then rebuild the web app so the public env value is inlined.
+            </p>
+          </div>
+        ) : null}
+
         {routePreview?.status === "ok" && routePreview.preview && plan?.status !== "ok" ? (
           <div
             style={{
@@ -963,8 +2636,16 @@ export default function MapPage() {
                 <strong>Refining:</strong> EV least-time planner is still running; this road preview updates first.
               </p>
             ) : null}
+            {routePreview.preview.partialPreviewMeta ? (
+              <p style={{ margin: "0 0 8px 0", fontSize: 11, color: "#0f766e" }}>
+                <strong>Multi-hop preview:</strong> line shows{" "}
+                {routePreview.preview.partialPreviewMeta.loadedSegments} of{" "}
+                {routePreview.preview.partialPreviewMeta.totalSegments} segment(s) so far — the map updates as each hop
+                completes (first segment no longer waits for the slowest hop).
+              </p>
+            ) : null}
             <p style={{ margin: "0 0 8px 0", fontSize: 12, color: "#444" }}>
-              Valhalla driving line (teal dashed on map) and turn-by-turn
+              Valhalla driving line (blue dashed on map) and turn-by-turn
               {parsedWaypoints.length === 0 ? (
                 <>
                   {" "}
@@ -1058,11 +2739,98 @@ export default function MapPage() {
           </div>
         ) : null}
 
+        {jobLiveSolverLegs !== null &&
+        jobLiveRequestId &&
+        loading &&
+        jobLiveSolverLegs.some((leg) => Array.isArray(leg) && leg.length > 0) ? (
+          <div style={{ marginTop: 16 }}>
+            <h3 style={{ margin: "12px 0 6px 0", fontSize: 14 }}>Debug (MVP) — plan-job checkpoints</h3>
+            <p style={{ fontSize: 12, color: "#555", marginBottom: 10 }}>
+              Each row below is a <strong>checkpoint</strong>’s <code>attempt</code> (solver progress), not the full{" "}
+              <code>debug</code> object. <code>partial_route</code> checkpoints update the itinerary above and are omitted
+              here. Transport:{" "}
+              {planJobUseSse() ? (
+                <>
+                  SSE <code>/plan/jobs/…/events</code>
+                </>
+              ) : (
+                <>
+                  <code>GET /plan/jobs/…</code> poll (set <code>NEXT_PUBLIC_PLAN_USE_SSE=false</code>)
+                </>
+              )}{" "}
+              (<code>NEXT_PUBLIC_PLAN_USE_JOB</code>). Full <code>debug.*</code> ships with the <code>complete</code>{" "}
+              result.
+            </p>
+            {jobLiveSolverLegs.length === 1 ? (
+              <DebugSolverAttemptsList
+                segments={jobLiveSolverLegs[0] ?? []}
+                heading="Solver rows from checkpoints (live)"
+                requestId={jobLiveRequestId}
+                liveCheckpoints
+                staggerMs={0}
+              />
+            ) : (
+              jobLiveSolverLegs.map((segs, li) =>
+                !Array.isArray(segs) || segs.length === 0 ? null : (
+                  <DebugSolverAttemptsList
+                    key={`${jobLiveRequestId}-job-leg-${li}`}
+                    segments={segs}
+                    heading={`Waypoint leg ${li + 1} · solver rows from checkpoints (live)`}
+                    requestId={`${jobLiveRequestId}-leg-${li}`}
+                    liveCheckpoints
+                    staggerMs={0}
+                  />
+                )
+              )
+            )}
+          </div>
+        ) : null}
+
         {plan ? (
           <div style={{ marginTop: 16 }}>
+            {(() => {
+              const d = (plan.debug ?? {}) as Record<string, unknown>;
+              const isPartialSnapshot = d.planJobPartialRoute === true;
+              return isPartialSnapshot ? (
+                <div
+                  style={{
+                    marginBottom: 8,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "4px 8px",
+                    borderRadius: 999,
+                    border: "1px solid #facc15",
+                    background: "#fef9c3",
+                    color: "#854d0e",
+                    fontSize: 11,
+                    fontWeight: 700
+                  }}
+                  title="Incremental plan-job checkpoint; final itinerary may change."
+                >
+                  Partial snapshot
+                </div>
+              ) : null;
+            })()}
+            {isPartialPlanSnapshot ? (
+              <div
+                style={{
+                  marginBottom: 8,
+                  padding: "8px 10px",
+                  borderRadius: 6,
+                  border: "1px solid #fcd34d",
+                  background: "#fffbeb",
+                  color: "#92400e",
+                  fontSize: 12
+                }}
+              >
+                Showing a quick checkpoint while the solver runs. Candidate pins stay on the map from prefetch;
+                final stops/charging replace this when solve completes.
+              </div>
+            ) : null}
             <h2 style={{ margin: "0 0 8px 0", fontSize: 16 }}>
               Itinerary
-              {plan.status === "ok" ? (
+              {plan.status === "ok" && !isPartialPlanSnapshot ? (
                 <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 600, color: "#15803d" }}>
                   — Full plan up to date
                 </span>
@@ -1078,6 +2846,54 @@ export default function MapPage() {
                 Stops: {plan.stops.length}
               </div>
             </div>
+            {(() => {
+              const map = mapRef.current;
+              const stopTypeCounts = plan.stops.reduce<Record<string, number>>((acc, s) => {
+                acc[s.type] = (acc[s.type] ?? 0) + 1;
+                return acc;
+              }, {});
+              const poiStopsCount = plan.stops.filter(isLikelyPoiStop).length;
+              const candidateChargerCount = candidatesForMap?.chargers?.length ?? 0;
+              const candidateHotelCount = candidatesForMap?.hotels?.length ?? 0;
+              const mapDiagnostics = map
+                ? {
+                    routeSource: Boolean(map.getSource("route-geojson")),
+                    routeLayer: Boolean(map.getLayer("route-line")),
+                    stopsFallbackSource: Boolean(map.getSource("stops-fallback-geojson")),
+                    stopsFallbackCircle: Boolean(map.getLayer("stops-fallback-circle")),
+                    stopsFallbackSleep: Boolean(map.getLayer("stops-fallback-sleep")),
+                    candidatesFallbackSource: Boolean(map.getSource("candidates-fallback-geojson")),
+                    candidatesFallbackChargers: Boolean(map.getLayer("candidates-fallback-chargers")),
+                    candidatesFallbackHotels: Boolean(map.getLayer("candidates-fallback-hotels"))
+                  }
+                : null;
+              return (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: 8,
+                    border: "1px dashed #cbd5e1",
+                    borderRadius: 6,
+                    background: "#f8fafc",
+                    fontFamily: "monospace",
+                    fontSize: 11,
+                    color: "#334155"
+                  }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Render diagnostics</div>
+                  <div>Stop types: {JSON.stringify(stopTypeCounts)}</div>
+                  <div>POI stops (heuristic): {poiStopsCount}</div>
+                  <div>
+                    Markers refs: stops={markersRef.current.length}, candidates=
+                    {candidateMarkersRef.current.length}
+                  </div>
+                  <div>
+                    Candidate pools: chargers={candidateChargerCount}, hotels={candidateHotelCount}
+                  </div>
+                  <div>Map layers/sources: {JSON.stringify(mapDiagnostics)}</div>
+                </div>
+              );
+            })()}
             <ol style={{ marginTop: 10 }}>
               {plan.stops.map((s) => (
                 <li key={s.id}>
@@ -1278,6 +3094,118 @@ export default function MapPage() {
                 </div>
               );
             })()}
+            {mapDebugRangeLegs() && plan.status === "ok" && plan.rangeLegs && plan.rangeLegs.length > 0 ? (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: 12,
+                  background: "#ecfeff",
+                  border: "1px solid #67e8f9",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: "#0e7490"
+                }}
+              >
+                <h3 style={{ margin: "0 0 6px 0", fontSize: 14 }}>Range legs (debug)</h3>
+                <p style={{ margin: "0 0 10px 0", fontSize: 11, color: "#155e75", lineHeight: 1.45 }}>
+                  <strong>Dev-only:</strong> enable with <code>NEXT_PUBLIC_MAP_DEBUG_RANGE_LEGS=true</code> (see{" "}
+                  <code>docs/WEB_SWITCHES.md</code>). Groups the itinerary at <strong>charge</strong> stops; the map may
+                  use a multi-feature GeoJSON route source when the merged polyline splits cleanly (see{" "}
+                  <code>rangeLegRouteFeatures.ts</code>). Same least-time solver —{" "}
+                  <code>docs/designs/range-based-segments-intent.md</code>. Optional API columns{" "}
+                  <strong>max hop / budget</strong> are chord sanity checks vs <code>EV_RANGE_MILES</code> +{" "}
+                  <code>CHARGE_BUFFER_SOC</code>.
+                </p>
+                <p style={{ margin: "0 0 10px 0", fontSize: 11, color: "#155e75", lineHeight: 1.45 }}>
+                  <strong>Timing:</strong> With default <strong>blocking</strong> <code>POST /plan</code>, the itinerary,
+                  route line, and this panel appear <strong>together</strong> when the server finishes (long trips can
+                  take many minutes). Set <code>NEXT_PUBLIC_PLAN_USE_JOB=true</code> to see <strong>checkpoint solver rows</strong>{" "}
+                  in Debug while the job runs; the final route still arrives with <code>result</code>.
+                </p>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", padding: "4px 8px 4px 0", color: "#0e7490" }}>#</th>
+                      <th style={{ textAlign: "center", padding: 4, color: "#0e7490", width: 36 }}>
+                        Line
+                      </th>
+                      <th style={{ textAlign: "left", padding: 4, color: "#0e7490" }}>From → to (stops)</th>
+                      <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Drive min</th>
+                      <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Charge min</th>
+                      <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Chord mi ≈</th>
+                        {(plan.rangeLegs ?? []).some((rl) => typeof rl.usableRangeMiles === "number") ? (
+                          <>
+                            <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Max hop mi ≈</th>
+                            <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Range budget mi</th>
+                          </>
+                        ) : null}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {plan.rangeLegs.map((rl, legIdx) => (
+                      <tr key={`${rl.fromStopId}-${rl.toStopId}-${rl.index}`}>
+                        <td style={{ padding: "4px 8px 4px 0", verticalAlign: "top" }}>{rl.index + 1}</td>
+                        <td style={{ padding: 4, verticalAlign: "top", textAlign: "center" }}>
+                          <span
+                            title="Route line on map (same blue for all legs)"
+                            style={{
+                              display: "inline-block",
+                              width: 14,
+                              height: 14,
+                              borderRadius: 3,
+                              border: "1px solid rgba(0,0,0,0.15)",
+                              backgroundColor: COLORS.roadBlue,
+                              verticalAlign: "middle"
+                            }}
+                          />
+                        </td>
+                        <td style={{ padding: 4, verticalAlign: "top" }}>
+                          <span style={{ fontFamily: "monospace", fontSize: 10 }}>{rl.fromStopId}</span>
+                          {" → "}
+                          <span style={{ fontFamily: "monospace", fontSize: 10 }}>{rl.toStopId}</span>
+                          <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
+                            {rl.stopIds.length} stops along leg
+                          </div>
+                        </td>
+                        <td style={{ textAlign: "right", padding: 4, verticalAlign: "top" }}>
+                          {Math.round(rl.travelTimeMinutes)}
+                        </td>
+                        <td style={{ textAlign: "right", padding: 4, verticalAlign: "top" }}>
+                          {Math.round(rl.chargeTimeMinutes)}
+                        </td>
+                        <td style={{ textAlign: "right", padding: 4, verticalAlign: "top" }}>
+                          {rl.chordMilesApprox.toFixed(1)}
+                        </td>
+                        {(plan.rangeLegs ?? []).some((rl) => typeof rl.usableRangeMiles === "number") ? (
+                          <>
+                            <td
+                              style={{
+                                textAlign: "right",
+                                padding: 4,
+                                verticalAlign: "top",
+                                color: rl.maxHopExceedsRangeBudget ? "#b45309" : undefined
+                              }}
+                              title={
+                                rl.maxHopExceedsRangeBudget
+                                  ? "Largest straight-line sub-hop exceeds usable range (chord vs EV_RANGE + buffer)"
+                                  : undefined
+                              }
+                            >
+                              {typeof rl.maxHopChordMilesApprox === "number"
+                                ? `${rl.maxHopChordMilesApprox.toFixed(1)}${rl.maxHopExceedsRangeBudget ? " ⚠" : ""}`
+                                : "—"}
+                            </td>
+                            <td style={{ textAlign: "right", padding: 4, verticalAlign: "top" }}>
+                              {typeof rl.usableRangeMiles === "number" ? rl.usableRangeMiles.toFixed(1) : "—"}
+                            </td>
+                          </>
+                        ) : null}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
             {plan.message ? (
               <div style={{ marginTop: 12, padding: 10, background: "#fff3cd", border: "1px solid #ffe69c", borderRadius: 6 }}>
                 {plan.message}
@@ -1286,18 +3214,209 @@ export default function MapPage() {
             {plan.debug ? (
               <div style={{ marginTop: 10 }}>
                 <h3 style={{ margin: "12px 0 6px 0", fontSize: 14 }}>Debug (MVP)</h3>
-                <pre
-                  style={{
-                    whiteSpace: "pre-wrap",
-                    fontSize: 11,
-                    padding: 10,
-                    background: "#f7f7f7",
-                    border: "1px solid #e8e8e8",
-                    borderRadius: 6
-                  }}
-                >
-                  {JSON.stringify(plan.debug, null, 2)}
-                </pre>
+                {(() => {
+                  const d = plan.debug as Record<string, unknown>;
+                  const sr = d.sourceRouting as Record<string, unknown> | undefined;
+                  const pc = d.providerCalls as
+                    | Record<
+                        string,
+                        {
+                          calls?: number;
+                          totalMs?: number;
+                          avgMs?: number;
+                          durationsMs?: unknown;
+                        }
+                      >
+                    | undefined;
+                  const segmentsAttempted = d.segmentsAttempted;
+                  const multiLegDbg = d.multiLeg === true;
+                  const legDebugList = multiLegDbg ? (d.legs as unknown[] | undefined) : undefined;
+
+                  const rest: Record<string, unknown> = { ...d };
+                  if (sr !== undefined) delete rest.sourceRouting;
+                  if (pc !== undefined) delete rest.providerCalls;
+                  if (segmentsAttempted !== undefined) delete rest.segmentsAttempted;
+                  if (multiLegDbg && Array.isArray(d.legs)) delete rest.legs;
+                  if (d.rangeLegs !== undefined) delete rest.rangeLegs;
+                  const fmtAge = (h: unknown) => {
+                    if (typeof h !== "number" || !Number.isFinite(h)) return null;
+                    if (h >= 48) return `${(h / 24).toFixed(1)} d`;
+                    return `${Math.round(h)} h`;
+                  };
+
+                  return (
+                    <>
+                      {sr && Object.keys(sr).length > 0 ? (
+                        <div
+                          style={{
+                            marginBottom: 10,
+                            padding: 12,
+                            background: "#f0fdf4",
+                            border: "1px solid #86efac",
+                            borderRadius: 6,
+                            fontSize: 12,
+                            color: "#14532d"
+                          }}
+                        >
+                          <div style={{ fontWeight: 600, marginBottom: 8 }}>Source routing (§2 trust)</div>
+                          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                            <tbody>
+                              {sr.sourceRoutingMode != null ? (
+                                <tr>
+                                  <td style={{ padding: "4px 8px 4px 0", color: "#166534", verticalAlign: "top" }}>
+                                    Configured mode
+                                  </td>
+                                  <td style={{ padding: "4px 0", fontFamily: "monospace" }}>
+                                    {String(sr.sourceRoutingMode)}
+                                  </td>
+                                </tr>
+                              ) : null}
+                              {sr.effectiveSourceRoutingMode != null ? (
+                                <tr>
+                                  <td style={{ padding: "4px 8px 4px 0", color: "#166534", verticalAlign: "top" }}>
+                                    Effective mode
+                                  </td>
+                                  <td style={{ padding: "4px 0", fontFamily: "monospace" }}>
+                                    {String(sr.effectiveSourceRoutingMode)}
+                                  </td>
+                                </tr>
+                              ) : null}
+                              {sr.mirrorSnapshotId != null ? (
+                                <tr>
+                                  <td style={{ padding: "4px 8px 4px 0", color: "#166534", verticalAlign: "top" }}>
+                                    Mirror snapshot
+                                  </td>
+                                  <td
+                                    style={{ padding: "4px 0", fontFamily: "monospace", wordBreak: "break-all" }}
+                                  >
+                                    {String(sr.mirrorSnapshotId)}
+                                  </td>
+                                </tr>
+                              ) : null}
+                              {sr.mirrorSchemaVersion != null ? (
+                                <tr>
+                                  <td style={{ padding: "4px 8px 4px 0", color: "#166534", verticalAlign: "top" }}>
+                                    Mirror schema
+                                  </td>
+                                  <td style={{ padding: "4px 0", fontFamily: "monospace" }}>
+                                    {String(sr.mirrorSchemaVersion)}
+                                  </td>
+                                </tr>
+                              ) : null}
+                              {sr.mirrorCreatedAt != null ? (
+                                <tr>
+                                  <td style={{ padding: "4px 8px 4px 0", color: "#166534", verticalAlign: "top" }}>
+                                    Snapshot time
+                                  </td>
+                                  <td style={{ padding: "4px 0", fontFamily: "monospace" }}>
+                                    {String(sr.mirrorCreatedAt)}
+                                  </td>
+                                </tr>
+                              ) : null}
+                              {sr.mirrorAgeHours != null ? (
+                                <tr>
+                                  <td style={{ padding: "4px 8px 4px 0", color: "#166534", verticalAlign: "top" }}>
+                                    Data age
+                                  </td>
+                                  <td style={{ padding: "4px 0", fontFamily: "monospace" }}>
+                                    {fmtAge(sr.mirrorAgeHours) ?? String(sr.mirrorAgeHours)}
+                                  </td>
+                                </tr>
+                              ) : null}
+                            </tbody>
+                          </table>
+                          <p style={{ margin: "8px 0 0 0", fontSize: 11, color: "#15803d" }}>
+                            Charger/POI tier follows <strong>effective mode</strong>. See ROUTING_UX_SPEC §2.
+                          </p>
+                        </div>
+                      ) : null}
+                      {Array.isArray(segmentsAttempted) && segmentsAttempted.length > 0 && !multiLegDbg ? (
+                        <DebugSolverAttemptsList
+                          segments={segmentsAttempted}
+                          heading="Solver attempts (staggered readout)"
+                          requestId={plan.requestId ?? "unknown"}
+                        />
+                      ) : null}
+                      {multiLegDbg && Array.isArray(legDebugList) && legDebugList.length > 0
+                        ? legDebugList.map((legDbg, li) => {
+                            const lg =
+                              legDbg && typeof legDbg === "object"
+                                ? (legDbg as Record<string, unknown>)
+                                : {};
+                            const segs = lg.segmentsAttempted;
+                            if (!Array.isArray(segs) || segs.length === 0) return null;
+                            return (
+                              <DebugSolverAttemptsList
+                                key={`${plan.requestId ?? "unknown"}-solver-leg-${li}`}
+                                segments={segs}
+                                heading={`Waypoint leg ${li + 1} · solver attempts (staggered readout)`}
+                                requestId={`${plan.requestId ?? "unknown"}-leg-${li}`}
+                              />
+                            );
+                          })
+                        : null}
+                      {pc && typeof pc === "object" && Object.keys(pc).length > 0 ? (
+                        <div
+                          style={{
+                            marginBottom: 10,
+                            padding: 12,
+                            background: "#eff6ff",
+                            border: "1px solid #93c5fd",
+                            borderRadius: 6,
+                            fontSize: 12,
+                            color: "#1e3a5f"
+                          }}
+                        >
+                          <div style={{ fontWeight: 600, marginBottom: 8 }}>Provider HTTP timing</div>
+                          <p style={{ margin: "0 0 8px 0", fontSize: 11, color: "#475569" }}>
+                            Summaries from <code>debug.providerCalls</code> (Valhalla / NREL / Overpass / geocode). Full
+                            per-call lists may appear in the JSON block below.
+                          </p>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                            <thead>
+                              <tr>
+                                <th style={{ textAlign: "left", padding: "4px 8px 4px 0", color: "#64748b" }}>
+                                  Provider
+                                </th>
+                                <th style={{ textAlign: "right", padding: 4, color: "#64748b" }}>Calls</th>
+                                <th style={{ textAlign: "right", padding: 4, color: "#64748b" }}>Total ms</th>
+                                <th style={{ textAlign: "right", padding: 4, color: "#64748b" }}>Avg ms</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {Object.entries(pc).map(([k, row]) => {
+                                if (!row || typeof row !== "object") return null;
+                                const r = row as { calls?: number; totalMs?: number; avgMs?: number };
+                                return (
+                                  <tr key={k}>
+                                    <td style={{ padding: "4px 8px 4px 0", fontFamily: "monospace" }}>{k}</td>
+                                    <td style={{ textAlign: "right", padding: 4 }}>{r.calls ?? "—"}</td>
+                                    <td style={{ textAlign: "right", padding: 4 }}>{r.totalMs ?? "—"}</td>
+                                    <td style={{ textAlign: "right", padding: 4 }}>{r.avgMs ?? "—"}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : null}
+                      {Object.keys(rest).length > 0 ? (
+                        <pre
+                          style={{
+                            whiteSpace: "pre-wrap",
+                            fontSize: 11,
+                            padding: 10,
+                            background: "#f7f7f7",
+                            border: "1px solid #e8e8e8",
+                            borderRadius: 6
+                          }}
+                        >
+                          {JSON.stringify(rest, null, 2)}
+                        </pre>
+                      ) : null}
+                    </>
+                  );
+                })()}
               </div>
             ) : null}
           </div>

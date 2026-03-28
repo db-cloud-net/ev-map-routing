@@ -47,7 +47,6 @@ function startServer() {
       PORT: String(API_PORT),
       E2E_SPAWN_PORT: String(API_PORT),
       DEPLOYMENT_ENV: "dev-local",
-      SOURCE_ROUTING_MODE: "remote_only",
       PLAN_LOG_REQUESTS: "false"
     },
     stdio: ["ignore", "inherit", "inherit"]

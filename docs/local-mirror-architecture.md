@@ -1,5 +1,7 @@
 # Local mirror architecture (NREL + Overpass)
 
+> **Scope:** This document describes **offline mirror refresh**, NDJSON snapshots, and **`SOURCE_ROUTING_MODE`** tiers. It is **not** the product **runtime** source for corridor planning when **`POI_SERVICES_BASE_URL`** is set — then **POI Services** owns corridor chargers/hotels for `/plan` (see **[`ROUTING_UX_SPEC.md`](./ROUTING_UX_SPEC.md)** §2).
+
 **Status:** Draft — design in progress (`/plan-eng-review` kickoff 2026-03-18).  
 **Intent:** Architecture **before** implementation (see `TODOS.md` Phase 2 lanes A–D).  
 **DRI:** David  

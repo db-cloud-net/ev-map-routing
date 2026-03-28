@@ -1,5 +1,9 @@
 # Local mirror epic — checkpoint (resume here)
 
+> **Scope:** Mirror checkpoint work (**NREL + Overpass** NDJSON, refresh jobs). **POI Services** is the **runtime** corridor source for `/plan` when configured — see **[`ROUTING_UX_SPEC.md`](./ROUTING_UX_SPEC.md)** §2.
+>
+> **`docker-compose.mirror.yml`** and **`scripts/d1-verify-mirror.mjs`** were **removed** from this repo (see **[`deprecate-nrel-overpass-mirror-travel-routing-adr.md`](./designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md)**). Treat this document as **historical** for the mirror stack.
+
 **Updated:** 2026-03-20 (NAS Compose validation noted below)  
 **DRI:** David  
 
@@ -63,7 +67,7 @@ All of **§A1–§A5** are written in `local-mirror-architecture.md` (section ta
 | **Formal review / sign-off** of A-track | DONE — D3 gate for first code slice frozen (**2026-03-20**). |
 | **Code** (`ChargerProvider` wiring, `sourceRouter`, adapters) | **In progress** — `planTrip` routes via `resolvePlanProviders`; remote adapters implement A3; `LocalMirrorAdapter` supports mirror reads; `sourceRouter` implements `local_primary_fallback_remote` and v1 `dual_read_compare`. Progress: `mirror:refresh` worker hardened (B2 v1 rerun-safety + refresh.state.json + promotion gating + retention + restart facet rewrite) and `SOURCE_ROUTING_MODE_FORCE=remote_only` rollback override (C3 mechanism) + C2 in-process gate accumulator added. Progress: C4 request-correlated logs implemented (`plan_source_selection`, `mirror_staleness`, `rollback_triggered`, and `dual_read_compare` w/ timings; fallback/dual-read already emit). Verified end-to-end C4 via `scripts/mirror-c4-longrun-smoke.mjs` and extended load via `scripts/mirror-c4-load-smoke.mjs` (now with stronger assertions for `deploymentEnv` + `dual_read_compare.compareDurationMs`). Expanded C2 gate evaluation in `api/src/mirror/c2Gate.selftest.ts` (WARN + fatal + interleaving/reset scenarios) and added `npm -w api run mirror:c2-gate-harness`. Added D1 runnable verification + runbook: `scripts/d1-verify-mirror.mjs` and `docs/d1-runbook.md` (actual docker-compose execution depends on Docker Desktop engine being available; script is included for repeatable ops validation). Still missing: full B2 staging/archiving policy polish + optional C4 metrics/telemetry beyond log-based v1. |
 | **`TODOS.md` execution checklist** | **Phase 2** checklist rows in [`TODOS.md`](../TODOS.md) are **checked** (architecture + C4 harness items). Remaining open work is **Phase 1 exit** (manual QA + per-stage `/plan` budgets), **Phase 3** (one-command QA / CI / SLO), and ongoing **code** polish (see `TODOS.md` “Known gaps”). |
-| **Production NAS (Synology)** | Validated: `planner-api` + `mirror-refresh-once` via Compose, external **`prod-network`**, Valhalla reachable as `http://valhalla:8002`, secrets via **`env_file`** → `/volume1/docker/Travel-Routing/.env` (incl. `NREL_API_KEY`). NDJSON artifacts live under **`api/mirror/snapshots/<snapshotId>/`**; **`api/mirror/current/manifest.json`** points at the active snapshot. |
+| **Production NAS (Synology)** | Validated: `planner-api` + `mirror-refresh-once` via Compose, external **`prod-network`**, Valhalla reachable as `http://valhalla:8002`, optional **POI Services** container on the same network as **`http://poi:8010`** (set **`POI_SERVICES_BASE_URL`** in planner `.env`). Secrets via **`env_file`** → `/volume1/docker/Travel-Routing/.env` (incl. `NREL_API_KEY`). NDJSON artifacts live under **`api/mirror/snapshots/<snapshotId>/`**; **`api/mirror/current/manifest.json`** points at the active snapshot. |
 
 ---
 

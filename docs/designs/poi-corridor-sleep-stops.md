@@ -1,5 +1,7 @@
 # Design: POI corridor for sleep stops, hotels, and hotel↔charger pairs
 
+> **Source of truth:** Corridor **chargers**, **hotels**, and **`pairs`** come from **POI Services**. Mentions of “live NREL” below are **legacy / optional** fallbacks — product routing is **fail-closed** on POI when configured.
+
 **Status:** Implemented (Travel-Routing side).  
 **Related:** [data-plane-vs-application-plane-adr.md](./data-plane-vs-application-plane-adr.md) · [ROUTING_UX_SPEC.md](../ROUTING_UX_SPEC.md) §2 · [V2_API.md](../V2_API.md)
 
@@ -28,16 +30,16 @@ Hotel POIs returned by POI Services (e.g. **`GET /pois/nearby?...&poi_type=hotel
 | **`nearby_dcfc_distance_yd`** | Straight-line distance (yards) to that DCFC; **`0`** when there is no paired DCFC. |
 | **`onsite_charger_level`**, **`onsite_charger_power_kw`**, **`onsite_charger_ports`**, **`onsite_charger_network`** | Onsite EV amenity at the hotel (e.g. L2/DCFC); may be empty when none. |
 
-Example: a hotel with `nearby_dcfc_id: 1943` and `nearby_dcfc_distance_yd: 358` has a shard-attested nearby DCFC; another with **`nearby_dcfc_id: 0`** and **`nearby_dcfc_distance_yd: 0`** should **not** be treated as having a POI “pair” for overnight charger meta (unless product explicitly falls back to live NREL search).
+Example: a hotel with `nearby_dcfc_id: 1943` and `nearby_dcfc_distance_yd: 358` has a shard-attested nearby DCFC; another with **`nearby_dcfc_id: 0`** and **`nearby_dcfc_distance_yd: 0`** should **not** be treated as having a POI “pair” for overnight charger meta (unless a **dev-only** legacy NREL fallback path is enabled in code).
 
 ## Planner behavior
 
 1. **`fetchCorridorChargersForLeg`** requests `charger`, `hotel`, optional `edges` and `pairs` when env allows.
 2. When **`POI_SERVICES_BASE_URL`** is set and **`USE_POI_SERVICES_CORRIDOR`** is not `false`, corridor **chargers** come from POI; **default** is **fail-closed** if the POI call fails or returns no DCFC (**`POI_SERVICES_FALLBACK_TO_NREL=false`** by default). Set **`POI_SERVICES_FALLBACK_TO_NREL=true`** only for dev/legacy.
 3. Overnight hotel discovery uses **POI corridor hotels** (not Overpass) when that leg used POI for the corridor.
-4. **`sleepChargerMeta`**: **Primary:** use **`nearby_dcfc_id`** / **`nearby_dcfc_distance_yd`** on the **same `hotel` row** already in the corridor response. Resolve the DCFC via the corridor **`charger`** list by **integer `id`** (then map to canonical charger id). **If `nearby_dcfc_id` is `0` (or non-positive), skip POI-attested pairing** — assume no close DCFC per POI; optionally use **`pairs`** layer only as secondary enrich, and **`findChargersNearPoint`** only if the product keeps a weaker live fallback. **Onsite** fields are for future UX (e.g. “L2 at hotel”) and are separate from **`nearby_dcfc_*`**.
+4. **`sleepChargerMeta`**: **Primary:** use **`nearby_dcfc_id`** / **`nearby_dcfc_distance_yd`** on the **same `hotel` row** already in the corridor response. Resolve the DCFC via the corridor **`charger`** list by **integer `id`** (then map to canonical charger id). **If `nearby_dcfc_id` is `0` (or non-positive), skip POI-attested pairing** — assume no close DCFC per POI; optionally use **`pairs`** layer only as secondary enrich. **`findChargersNearPoint`** (legacy NREL) applies only when that optional path remains enabled. **Onsite** fields are for future UX (e.g. “L2 at hotel”) and are separate from **`nearby_dcfc_*`**.
 
-**Corridor coverage gap** — `nearby_dcfc_id` may point at a DCFC outside the corridor `charger` bbox/radius; join fails → planner uses live NREL and writes `sleep_dcfc_corridor_miss` review line. POI can use logs on periodic updates; run **`node scripts/poi-review-log-summary.mjs`** to aggregate events and `resolvedVia` outcomes.
+**Corridor coverage gap** — `nearby_dcfc_id` may point at a DCFC outside the corridor `charger` bbox/radius; join fails → planner may use a **legacy** live lookup and writes `sleep_dcfc_corridor_miss` review line when that path exists. POI can use logs on periodic updates; run **`node scripts/poi-review-log-summary.mjs`** to aggregate events and `resolvedVia` outcomes.
 
 ## Errors (user-visible)
 
@@ -55,3 +57,8 @@ Clients should show **`message`** to the user.
 ## Locks
 
 **`lockedHotelId`** may be **`poi_services:hotel:<numeric>`** when corridor hotels are POI-sourced (same id universe as **`candidates.hotels`**).
+
+Lock behavior for this design:
+- Treat **`lockedHotelId`** as the **first hotel searched** (priority order), not a hard-fail lock.
+- Run the same hotel-first pairing checks (`nearby_dcfc_distance_yd <= 400`, max 10 hotels, detour guardrail +15 minutes).
+- If pairing checks fail for all candidates, keep the first hotel as sleep stop and proceed with sleep-without-charger metadata.

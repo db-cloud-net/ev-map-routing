@@ -6,11 +6,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only --exit-child src/server.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/api/src/server.js",
-    "mirror:refresh": "ts-node-dev --respawn --transpile-only src/mirror/refreshSnapshot.ts",
-    "mirror:c2-selftest": "ts-node-dev --respawn --transpile-only src/mirror/c2Gate.selftest.ts",
-    "mirror:c2-gate-harness": "ts-node-dev --respawn --transpile-only src/mirror/c2Gate.selftest.ts",
-    "mirror:refresh:prod": "node dist/api/src/mirror/refreshSnapshot.js"
+    "start": "node dist/api/src/server.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

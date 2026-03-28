@@ -39,6 +39,7 @@ runStep("e2e-cors-functional.mjs", "node", [
 runStep("e2e-plan-log-contract.mjs", "node", [
   path.join(root, "scripts", "e2e-plan-log-contract.mjs")
 ]);
+runStep("e2e-plan-job.mjs", "node", [path.join(root, "scripts", "e2e-plan-job.mjs")]);
 runStep("e2e-replan-smoke.mjs", "node", [
   path.join(root, "scripts", "e2e-replan-smoke.mjs")
 ]);

@@ -1,10 +1,10 @@
 # Slice 4 — progressive ~60s first screen (design)
 
-**Status:** **Partially implemented** — **Phase 1** `POST /route-preview` + smoke; **Phase 2** map preview (teal line, merged multi-waypoint); **Phase 3** **shipped (MVP):** honest Plan button states; §5 **second horizon** (`preview.nextHorizon`); **Phase 4 (§4 MVP):** **`/map`** progressive refinement **checklist** + **refinement anchors** line from planner stops. **Still open:** server-side multi-round refinement loops + waypoint reorder. Normative product text remains **[ROUTING_UX_SPEC.md](../ROUTING_UX_SPEC.md)** §3–§5.  
+**Status:** **Partially implemented** — **Phase 1** `POST /route-preview` + smoke; **Phase 2** map preview (teal line, merged multi-waypoint); **Phase 3** **shipped (MVP):** honest Plan button states; §5 **second horizon** (`preview.nextHorizon`); **Phase 4 (§4 MVP):** **`/map`** progressive refinement **checklist** + **refinement anchors** line from planner stops; **`planJob`** **segment-hop** checkpoints + map segment-hop copy; **haversine waypoint-order proxy** (`optimizeWaypointOrder`) + banner when applied — see **[`range-leg-incremental-trust-adr.md`](./range-leg-incremental-trust-adr.md#slice-4--progressive-refinement-loops)** § Slice 4. **Still open:** further §4 fidelity (e.g. Valhalla-heavy refinements per **`slice4`** open rows). Normative product text remains **[ROUTING_UX_SPEC.md](../ROUTING_UX_SPEC.md)** §3–§5.  
 **Normative product decisions** stay in **ROUTING_UX_SPEC**; this doc is **proposed** API + client shape until reviewed.
 
 **Depends on:** **[Slice 3](./slice3-get-candidates.md)** (`POST /candidates` + optional map prefetch) — **shipped**.  
-**Related:** **[MAP_AND_NAV.md](../MAP_AND_NAV.md)** (today’s map line is straight between **stops**, not full road geometry).
+**Related:** **[MAP_AND_NAV.md](../MAP_AND_NAV.md)** (today’s map line is straight between **stops**, not full road geometry). **Active engineering track:** **[`range-leg-incremental-trust-adr.md`](./range-leg-incremental-trust-adr.md#slice-4--progressive-refinement-loops)** (Slice 4 — refinement loops).
 
 ---
 
@@ -114,7 +114,7 @@ For Slice 4:
 | **1** | **Done (API)** — **`POST /route-preview`** (`api/src/planner/routePreview.ts`, **`v2-1-route-preview`**) + horizon clip + **`scripts/e2e-route-preview-smoke.mjs`** in **`npm run qa:smoke`**. **No map UI yet.** |
 | **2** | **Done** — Map (`web/src/app/map/page.tsx`): **`POST /route-preview`** in parallel with **`/plan`** (single segment); teal dashed line + horizon TBT panel; cleared on successful plan. Env: **`NEXT_PUBLIC_PREFETCH_ROUTE_PREVIEW`**. |
 | **3** | **Done (MVP)** — API: **`preview.nextHorizon`** (second clip from same Valhalla response). Web: merged second horizons, §5 “next segment” banner, “Refining…” line, Road directions + preview show first + next lists. **Not done:** §4 multi-round refinement loop (charge/sleep anchors). |
-| **4** | **§4 MVP (web):** staged **Progressive refinement** checklist + **refinement anchors** line after a successful plan (honest copy: waypoint order fixed to user input; no automated reorder). **Not done:** iterative server-side refinement loops + reorder UX. *(Multi-waypoint preview merge already shipped.)* |
+| **4** | **§4 MVP (web):** staged **Progressive refinement** checklist + **refinement anchors** line after a successful plan. **API (planJob):** **`segment_refine_hop_*`** **`partial_route`** checkpoints after each timed **segment hop**; **optional** **`optimizeWaypointOrder`** (haversine proxy) + **`debug.waypointOrderOptimization`**. **Map:** segment-hop refinement count in the refinement strip + user/chosen order callout when reorder applies — see **`range-leg-incremental-trust-adr.md`** § Slice 4. *(Multi-waypoint preview merge already shipped.)* **Not done:** deeper reorder UX + remaining Phase **4** rows in this doc (Valhalla / correlated APIs). |
 
 ---
 

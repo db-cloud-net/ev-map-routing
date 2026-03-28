@@ -11,8 +11,7 @@ The planner talks to Valhalla over HTTP at **`VALHALLA_BASE_URL`** (no path; req
 
 | Place | Value |
 |-------|--------|
-| Code fallback (no env) | **`http://valhalla:8002`** — `DEFAULT_VALHALLA_BASE_URL` in **`api/src/config/valhallaBaseUrl.ts`** |
-| **`docker-compose.mirror.yml`** | `${VALHALLA_BASE_URL:-http://valhalla:8002}` |
+| Code fallback (no env) |http://valhalla:8002 **``** — `DEFAULT_VALHALLA_BASE_URL` in **`api/src/config/valhallaBaseUrl.ts`** |
 | **`.env.example`** | `http://localhost:8002` for laptop + local Valhalla |
 
 Override with **`VALHALLA_BASE_URL`** in **`.env`** when the planner runs somewhere that cannot use those hostnames.

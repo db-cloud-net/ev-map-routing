@@ -3,12 +3,13 @@
  *
  *   node scripts/e2e-candidates-smoke.mjs
  *
- * Env: API_PORT (default 3014), NREL_API_KEY, Valhalla — same as other planner E2E.
+ * Env: API_PORT (default 3014), Valhalla — POI corridor is satisfied by an in-script mock server.
  */
 
 import { execSync, spawn } from "node:child_process";
 import process from "node:process";
 import { killListenersOnPort } from "./e2e-kill-port.mjs";
+import { startPoiCorridorMock } from "./e2e-poi-corridor-mock.mjs";
 
 const API_PORT = Number(process.env.API_PORT ?? "3014");
 const API_BASE = process.env.API_BASE ?? `http://localhost:${API_PORT}`;
@@ -35,7 +36,7 @@ async function waitForHealth({ timeoutMs = 60000 } = {}) {
   throw new Error(`Timed out waiting for ${API_BASE}/health`);
 }
 
-function startServer() {
+function startServer(poiBaseUrl) {
   killListenersOnPort(API_PORT, { verbose: process.env.E2E_VERBOSE === "1" });
   execSync("npm -w api run build", { stdio: "inherit" });
 
@@ -47,7 +48,7 @@ function startServer() {
       PORT: String(API_PORT),
       E2E_SPAWN_PORT: String(API_PORT),
       DEPLOYMENT_ENV: "dev-local",
-      SOURCE_ROUTING_MODE: "remote_only",
+      POI_SERVICES_BASE_URL: poiBaseUrl,
       PLAN_LOG_REQUESTS: "false"
     },
     stdio: ["ignore", "inherit", "inherit"]
@@ -75,9 +76,11 @@ async function postCandidates(body) {
 }
 
 async function main() {
-  const proc = startServer();
+  const poiMock = await startPoiCorridorMock();
   try {
-    await waitForHealth({ timeoutMs: 60000 });
+    const proc = startServer(poiMock.baseUrl);
+    try {
+      await waitForHealth({ timeoutMs: 60000 });
 
     const r = await postCandidates({
       start: "Raleigh, NC",
@@ -103,13 +106,16 @@ async function main() {
     });
     assert(bad.json?.status === "error" || bad.respStatus === 400, "missing start+replan should fail");
 
-    console.log("e2e-candidates-smoke: ok");
-  } finally {
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      // ignore
+      console.log("e2e-candidates-smoke: ok");
+    } finally {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
     }
+  } finally {
+    await poiMock.close();
   }
 }
 

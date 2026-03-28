@@ -1,8 +1,10 @@
 # Routing UX & objectives (frozen spec)
 
-This document captures **product and UX decisions** for EV trip planning with **Valhalla** (roads), **local mirror** data for chargers and hotels (NREL + Overpass shaped), and **progressive** delivery of directions. It does **not** prescribe implementation tickets here.
+> **Planner corridor source:** With **`POI_SERVICES_BASE_URL`** set, **POI Services** is the runtime source for corridor DC-fast chargers, hotels, and optional pairs/edges. This app does **not** ship live NREL/Overpass clients or **`SOURCE_ROUTING_MODE`** (see **[`deprecate-nrel-overpass-mirror-travel-routing-adr.md`](./designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md)**). **§2** still mentions mirror/NREL for **historical product policy** — the **current** API is **POI + Valhalla** for roads and **geocode** for user-entered addresses (not every location is modeled in POI).
 
-**Related:** [VALHALLA.md](./VALHALLA.md) (base URL / port), [MAP_AND_NAV.md](./MAP_AND_NAV.md) (current MVP limitations), [local-mirror-architecture.md](./local-mirror-architecture.md) (mirror design).
+This document captures **product and UX decisions** for EV trip planning with **Valhalla** (roads), **POI Services** (corridor chargers/hotels when configured), and **progressive** delivery of directions. It does **not** prescribe implementation tickets here.
+
+**Related:** [VALHALLA.md](./VALHALLA.md) (base URL / port), [MAP_AND_NAV.md](./MAP_AND_NAV.md) (current MVP limitations), [TESTING.md](../TESTING.md) (env, QA, `debug.*`), [deprecate-nrel-overpass-mirror-travel-routing-adr.md](./designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md) · [local-mirror-architecture.md](./local-mirror-architecture.md) *(archive — pre–POI-only corridor)*.
 
 ---
 
@@ -24,13 +26,15 @@ This document captures **product and UX decisions** for EV trip planning with **
 
 | Aspect | Decision |
 |--------|----------|
-| **NREL (chargers)** | Prefer **local mirror** (US dataset), not live API per request for normal operation. |
-| **Overpass (hotels / POIs)** | Same: **local mirror**, US scope for snapshot pulls. |
-| **Refresh cadence** | **Monthly** **or** **user-initiated** update/download. |
-| **Fallback** | **Fail closed** — if mirror is missing, corrupt, or unusable for the request, return a **clear, actionable error** (no silent switch to remote NREL/Overpass for `/plan` under this policy). |
-| **Trust** | Surface **data freshness** (e.g. mirror snapshot date) where it helps user confidence. |
+| **POI Services (product default)** | When **`POI_SERVICES_BASE_URL`** is set, corridor **chargers**, **hotels**, optional **`pairs`** / **`edges`** come from **POI Services** — the runtime source for `/plan` and `/candidates`. Travel-Routing does **not** call live NREL or Overpass for corridor planning. |
+| **Current API** | **`resolvePlanProviders`** is **POI-only** (`poi_only`). There is no **`SOURCE_ROUTING_MODE`**, mirror tier, or NREL/Overpass client in **`api/src/**`** — see **[`deprecate-nrel-overpass-mirror-travel-routing-adr.md`](./designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md)** and **`TESTING.md`**. |
+| **NREL / Overpass / local mirror (historical)** | Older **mirror + remote** operations were documented for corridor data **before** POI-only; that wiring is **not** shipped in this repo. **[`local-mirror-architecture.md`](./local-mirror-architecture.md)** remains for **archive / migration** context only. |
+| **Refresh cadence** | **Monthly** **or** **user-initiated** update/download (POI ingest / offline jobs — outside this app’s hot path). |
+| **Fallback** | **Fail closed** — if required corridor data is missing, corrupt, or unusable for the request, return a **clear, actionable error** (no silent switch to remote NREL/Overpass for `/plan` under this policy). |
+| **POI corridor** | **Fail closed by default** — when **`POI_SERVICES_BASE_URL`** is configured and **`POI_SERVICES_FALLBACK_TO_NREL`** is not `true`, a failed or empty POI corridor query returns **`errorCode`** **`POI_SERVICES_CORRIDOR_FAILED`** or **`POI_SERVICES_NO_CHARGERS`** (no silent NREL corridor). See **[`poi-corridor-sleep-stops.md`](./designs/poi-corridor-sleep-stops.md)**. |
+| **Trust** | Surface **data freshness** where the product exposes it (e.g. POI/manifest provenance, snapshot dates when relevant) so users can judge confidence. |
 
-*Implementation notes:* Planner API **`SOURCE_ROUTING_MODE=local_primary_fail_closed`** uses the local mirror for charger + POI reads only (no remote fallback). Use **`local_primary_fallback_remote`** when ops wants mirror-first with allow-listed fallback to NREL/Overpass. See **`TESTING.md`** and **`docs/local-mirror-architecture.md`** (A4). Successful **`POST /plan`** / **`POST /candidates`** responses include **`debug.sourceRouting`** (modes + optional **`mirrorSnapshotId`**, **`mirrorCreatedAt`**, **`mirrorAgeHours`**) for transparency.
+*Implementation notes:* **`debug.sourceRouting`** carries **`sourceRoutingMode`** / **`effectiveSourceRoutingMode`** (both **`poi_only`**); legacy mirror snapshot fields were removed. Corridor sampling env: **`CORRIDOR_*`** (aliases include deprecated **`NREL_*`** names) — see **`TESTING.md`** and **`.env.example`**. On Synology Docker (**`prod-network`**), **`POI_SERVICES_BASE_URL=http://poi:8010`** — **[`d1-runbook.md`](./d1-runbook.md)**.
 
 ---
 
@@ -61,7 +65,7 @@ If **60s** cannot be met in practice, **relax other constraints** (coarser globa
 
 **Ordering constraint:** Waypoint **reorder** must be **time-boxed** or **bounded** so phase-1 can return within the **60s** budget; if the best order isn’t final yet, the UI must **invalidate or relabel** when the order changes.
 
-*Implementation note (MVP):* **`/map`** shows a **three-stage checklist** (road preview → candidate pins → `/plan` itinerary), plus an ordered **refinement anchors** line from planner stops. This is **not** a server-side multi-round loop yet; see **`docs/designs/slice4-progressive-first-screen.md`** Phase **4**.
+*Implementation note (MVP):* **`/map`** shows a **three-stage checklist** (road preview → candidate pins → `/plan` itinerary), plus an ordered **refinement anchors** line from planner stops. With **`planJob: true`**, the API also emits **`partial_route`** checkpoints **after each timed segment hop** (toward the next charge or end) — **`reason`** **`segment_refine_hop_*`**, see **`docs/designs/range-leg-incremental-trust-adr.md`** § Slice 4. **Optional** **`optimizeWaypointOrder`** (time-budgeted haversine proxy) + map copy for segment hops and chosen order — further §4 fidelity remains in **`docs/designs/slice4-progressive-first-screen.md`** Phase **4** open rows.
 
 ---
 
@@ -82,12 +86,37 @@ If **60s** cannot be met in practice, **relax other constraints** (coarser globa
 
 ---
 
+## 6.5 Timeouts and “still working” (liveness)
+
+- **Keep** maximum durations on **client** (`fetch` abort on `POST /plan`) and **server** (total wall clock around `planTrip`). **Why:** avoid a **stuck browser tab**, bound **API** work, and **surface failure** if Valhalla/POI/geocode/etc. hang instead of waiting forever.
+- **Timeouts are not** the **§3** first-screen **target** (~60s). Long **multi-stop EV** solves may **legitimately** take **1–3+ minutes**; if users often hit the cap, **raise** env (see [TESTING.md](../TESTING.md)) rather than treating timeout as normal.
+- **Without** streaming or job polling, **perceived** liveness is shown by: **elapsed time** in the UI, a **staged checklist** (road preview → pins → itinerary), and **parallel** work that can finish **before** `/plan` (teal `/route-preview` line, `/candidates` pins). **Optional:** enable **`NEXT_PUBLIC_PLAN_USE_JOB`** so **`GET /plan/jobs/:id`** delivers **checkpoints**; the map can show **partial** stops/legs before the job completes (real data — see §6.6). **Future:** SSE or NDJSON for finer-grained transport.
+- **Planner-only debug** (e.g. `debug.segmentsAttempted`) on **blocking** `POST /plan` is **not** visible until the response returns. With **`planJob` + poll**, **`checkpoints`** (and partial snapshots) can surface **before** the final `result`; full **`debug.*`** still ships with **`result`** when **`complete`**.
+- **Failures:** timeout copy should be **actionable** (raise limits, shorter trip, retry).
+
+---
+
+## 6.6 Progressive itinerary delivery (future — trust)
+
+**Intent:** Show the **committed** route and **charge stops** being **assembled along the corridor** as the backend finishes work, so the user sees **real** progress—not a spinner guessing game.
+
+| Decision | Choice |
+|----------|--------|
+| **Unit of progress** | **Driving leg** at **charge-stop granularity** (segment from current anchor to the **next charge** or **destination**)—the natural human unit for EV planning. |
+| **Truth vs theater** | **Real only.** The UI may only advance when the **server** (or async job) returns **actual** partial itinerary data. **No** fake progress bars, **no** simulated milestones, **no** time-based “theater” that implies work completed when it has not. |
+| **Partial failure** | **Retain** completed segments on the map/list. If a **later** segment fails or hits a timeout, offer **retry from the failed segment** (or replan forward from last good anchor)—**do not** wipe the whole trip by default. |
+| **Implementation** | Requires **backend support**: e.g. **job id + poll** or **SSE** with checkpoints, or **multi-call** APIs that return **successive** partial `PlanTripResponse`-shaped slices. Not achievable with client-only animation over a single blocking `POST /plan`. |
+
+**Related:** [TODOS.md](../TODOS.md) (*Plan job API + polling for `/plan` progress*).
+
+---
+
 ## 7. UX principles (confidence & ease of use)
 
 - **Honest states:** e.g. `Planning` → `Approximate route` → `Refining…` → `Up to date` / per-leg status.
 - **Plain-language limits:** one line on what “approximate” vs “detailed” means on the map.
 - **Assumptions visible:** range, travel-day rule, charging model — short “Assumptions” surface.
-- **Actionable failures:** title → **why** (mirror, empty corridor, timeout) → **what to do** (refresh data, narrow trip, retry).
+- **Actionable failures:** title → **why** (POI/corridor error, empty corridor, timeout) → **what to do** (refresh data, narrow trip, retry).
 - **Route changed:** if refinement **changes** the plan, notify with **what changed** (e.g. order or one stop).
 - **Disclaimer:** planning aid — follow **road signs** and **local laws**; not a substitute for in-vehicle navigation where required.
 - **Explicitly out of scope for this spec:** comparison to third-party consumer mapping products.

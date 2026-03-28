@@ -20,6 +20,7 @@ import { execSync, spawn } from "node:child_process";
 import readline from "node:readline";
 import process from "node:process";
 import { killListenersOnPort } from "./e2e-kill-port.mjs";
+import { startPoiCorridorMock } from "./e2e-poi-corridor-mock.mjs";
 
 const API_PORT = Number(process.env.API_PORT ?? "3010");
 const API_BASE = process.env.API_BASE ?? `http://localhost:${API_PORT}`;
@@ -47,7 +48,7 @@ async function waitForHealth({ timeoutMs = 60000 } = {}) {
   throw new Error(`Timed out waiting for ${API_BASE}/health`);
 }
 
-function startServer() {
+function startServer(poiBaseUrl) {
   killListenersOnPort(API_PORT, { verbose: process.env.E2E_VERBOSE === "1" });
   execSync("npm -w api run build", { stdio: "inherit" });
 
@@ -59,7 +60,7 @@ function startServer() {
       PORT: String(API_PORT),
       E2E_SPAWN_PORT: String(API_PORT),
       DEPLOYMENT_ENV: expectedDeploymentEnv,
-      SOURCE_ROUTING_MODE: "remote_only",
+      POI_SERVICES_BASE_URL: poiBaseUrl,
       PLAN_LOG_REQUESTS: "true"
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -146,9 +147,11 @@ async function runPlanV2({ requestId }) {
 async function main() {
   const requestId = `log-contract-${Date.now()}`;
 
-  const { proc, events } = startServer();
+  const poiMock = await startPoiCorridorMock();
   try {
-    await waitForHealth({ timeoutMs: 60000 });
+    const { proc, events } = startServer(poiMock.baseUrl);
+    try {
+      await waitForHealth({ timeoutMs: 60000 });
 
     const planResult = await runPlan({ requestId });
     if (!planResult?.json) {
@@ -209,13 +212,16 @@ async function main() {
       assert(e.requestId === requestId, `Contract violation: requestId mismatch on ${e.event}`);
     }
 
-    console.log("e2e-plan-log-contract: ok");
-  } finally {
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      // ignore
+      console.log("e2e-plan-log-contract: ok");
+    } finally {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
     }
+  } finally {
+    await poiMock.close();
   }
 }
 

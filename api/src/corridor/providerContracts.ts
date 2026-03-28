@@ -1,15 +1,19 @@
 import type { LatLng as SharedLatLng } from "../types";
 
+/**
+ * Canonical corridor charger / hotel shapes for the planner. Data is loaded from **POI Services**
+ * (`corridorCandidates` / `poiServicesMapping`). `source` values preserve stable id prefixes for
+ * legacy `nrel:` / `overpass:` strings when POI shards expose upstream ids — Travel-Routing does not
+ * call live NREL or Overpass (see `docs/designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md`).
+ */
 export type LatLng = SharedLatLng;
-
-export type MirrorSchemaVersion = "1.0.0";
 
 export type CanonicalCharger = {
   entityType: "charger";
-  /** Stable canonical id: `nrel:<providerId>` */
+  /** Stable id, often `poi_services:…` or legacy `nrel:<providerId>`. */
   id: string;
   providerId: string;
-  source: "nrel";
+  source: "nrel" | "poi_services";
   name: string;
   coords: LatLng;
   maxPowerKw?: number;
@@ -17,10 +21,9 @@ export type CanonicalCharger = {
 
 export type CanonicalPoiHotel = {
   entityType: "poi_hotel";
-  /** Stable canonical id: `overpass:<osmType>:<providerId>` */
   id: string;
   providerId: string;
-  source: "overpass";
+  source: "overpass" | "poi_services";
   name: string;
   coords: LatLng;
   brand?: string;
@@ -31,11 +34,8 @@ export type CanonicalPoiHotel = {
 export type ChargerPointMode = "dc_fast" | "electric_all";
 
 export type ProviderCallOptions = {
-  /** request correlation id for logs */
   requestId?: string;
-  /** Parent cancellation (client disconnect, etc.) */
   signal?: AbortSignal;
-  /** Per-call deadline */
   timeoutMs?: number;
 };
 
@@ -63,29 +63,12 @@ export type PoiProvider = {
   ): Promise<CanonicalPoiHotel[]>;
 };
 
-export type SourceRoutingMode =
-  | "remote_only"
-  /** Mirror first; on mirror SourceErrors in the allow-list, call NREL/Overpass (ROUTING_UX_SPEC §2 “fallback”). */
-  | "local_primary_fallback_remote"
-  /**
-   * Mirror only for charger + POI reads — no remote fallback (ROUTING_UX_SPEC §2 fail-closed policy for `/plan`).
-   * Use when mirror must be authoritative; surface `SourceError` to the client instead of silent remote switch.
-   */
-  | "local_primary_fail_closed"
-  | "dual_read_compare";
-
+/** Runtime bundle for `resolvePlanProviders` — POI Services-only (`sourceRouter.ts`). */
 export type PlanProviderBundle = {
   chargers: ChargerProvider;
   pois: PoiProvider;
   meta: {
-    mode: SourceRoutingMode;
-    mirrorSnapshotId?: string;
-    mirrorSchemaVersion?: MirrorSchemaVersion;
-    /** ISO timestamp from mirror manifest when present (ROUTING_UX_SPEC §2 trust). */
-    mirrorCreatedAt?: string;
-    /** Hours since manifest `createdAt` when parseable. */
-    mirrorAgeHours?: number;
-    effectiveSourceRoutingMode: SourceRoutingMode;
+    mode: "poi_only";
+    effectiveSourceRoutingMode: "poi_only";
   };
 };
-

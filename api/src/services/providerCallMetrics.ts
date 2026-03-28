@@ -1,13 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-export type ProviderKind = "valhalla" | "nrel" | "overpass" | "geocode";
+export type ProviderKind = "valhalla" | "geocode" | "poi_services";
 
 /** Per-provider HTTP timing for one `/plan` request (mutated during planning). */
 export class ProviderCallMetrics {
   valhallaMs: number[] = [];
-  nrelMs: number[] = [];
-  overpassMs: number[] = [];
   geocodeMs: number[] = [];
+  poiServicesMs: number[] = [];
 
   record(kind: ProviderKind, ms: number) {
     if (!Number.isFinite(ms) || ms < 0) return;
@@ -16,14 +15,11 @@ export class ProviderCallMetrics {
       case "valhalla":
         this.valhallaMs.push(rounded);
         break;
-      case "nrel":
-        this.nrelMs.push(rounded);
-        break;
-      case "overpass":
-        this.overpassMs.push(rounded);
-        break;
       case "geocode":
         this.geocodeMs.push(rounded);
+        break;
+      case "poi_services":
+        this.poiServicesMs.push(rounded);
         break;
       default:
         break;
@@ -38,9 +34,8 @@ export class ProviderCallMetrics {
     return {
       providerCalls: {
         valhalla: summarizeDurations(this.valhallaMs),
-        nrel: summarizeDurations(this.nrelMs),
-        overpass: summarizeDurations(this.overpassMs),
-        geocode: summarizeDurations(this.geocodeMs)
+        geocode: summarizeDurations(this.geocodeMs),
+        poi_services: summarizeDurations(this.poiServicesMs)
       }
     };
   }
@@ -89,5 +84,8 @@ export function runPlanWithProviderMetrics<T>(
   metrics: ProviderCallMetrics,
   fn: () => Promise<T>
 ): Promise<T> {
-  return als.run(metrics, fn);
+  // Async wrapper so continuations after `await` stay in the ALS store (Node async_hooks).
+  return als.run(metrics, async () => {
+    return await fn();
+  });
 }

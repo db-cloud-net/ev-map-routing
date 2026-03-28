@@ -1,5 +1,9 @@
 # EV travel routing (monorepo)
 
+> **Planner corridor source:** With **`POI_SERVICES_BASE_URL`** set, **POI Services** supplies corridor DC-fast chargers, hotels, and optional pairs/edges for `/plan` and `/candidates`.
+
+> **Deprecated:** The **local mirror Docker stack** (`docker-compose.mirror.yml`, mirror refresh, NREL/Overpass mirror tiers) was **removed**. Do not pull an old revision and run that compose file — see **[`docs/DEPRECATED_MIRROR_STACK.md`](./docs/DEPRECATED_MIRROR_STACK.md)** and git tag **`deprecated/mirror-stack-removed`**.
+
 ## Documentation (v1 handoff → v2)
 
 | Doc | Use |
@@ -8,6 +12,7 @@
 | **[docs/README.md](./docs/README.md)** | Index of all docs. |
 | **[PRD.md](./PRD.md)** | Product requirements + QA-linked env knobs. |
 | **[TESTING.md](./TESTING.md)** | QA runners, timeouts, troubleshooting. |
+| **[docs/WEB_SWITCHES.md](./docs/WEB_SWITCHES.md)** | Map app **`NEXT_PUBLIC_*`** switches (`web/.env.local`). |
 | **[docs/VALHALLA.md](./docs/VALHALLA.md)** | Valhalla **`VALHALLA_BASE_URL`** (port **8002**, NAS vs Docker). |
 | **[docs/MAP_AND_NAV.md](./docs/MAP_AND_NAV.md)** | Map line vs highways; turn-by-turn limits; path to road geometry. |
 | **[docs/ROUTING_UX_SPEC.md](./docs/ROUTING_UX_SPEC.md)** | **Routing/UX spec** — objectives, ~60s first screen, progressive refinements, mirror + fail closed. |
@@ -15,7 +20,7 @@
 
 ## Manual testing (default: web **3000**, API **3001**)
 
-1. **Copy env** (once): `cp .env.example .env` — add `NREL_API_KEY` and any service URLs you use.
+1. **Copy env** (once): `cp .env.example .env` — set **`POI_SERVICES_BASE_URL`** for corridor planning. See **[`docs/d1-runbook.md`](./docs/d1-runbook.md)** for deploy networking (POI + API on Docker).
 
 2. **Set `DEPLOYMENT_ENV` + CORS.** For the default local dev setup, `.env` should include:
 

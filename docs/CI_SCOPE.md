@@ -1,8 +1,10 @@
 # CI / gate scope (proposal)
 
+> **Note:** Default PR gates (`qa:smoke`) assume **POI Services + Valhalla**-style envs per **`TESTING.md`**. The legacy mirror / NREL planner paths are removed from this repo.
+
 **Status:** Decision record — adjust when dev-infra timing is fixed.
 
-**Last verified on `main` (2026-03-21):** `npm -w api run build` · `npm run qa:smoke` · `npm -w web run build` — all pass *(local)*.
+**Last verified on `main` (2026-03-24):** `npm -w api run build` · `npm run qa:smoke` · `npm -w web run build` — all pass *(local)*.
 
 ## Goals
 
@@ -15,24 +17,24 @@
 |------|---------|--------|
 | API compile | `npm -w api run build` | `tsc` |
 | Web compile | `npm -w web run build` | Optional second stage if CI time allows |
-| Automated smoke | `npm run qa:smoke` | `scripts/qa-smoke-all.mjs`: API build + `e2e-cors-functional.mjs` + `e2e-plan-log-contract.mjs` + `e2e-replan-smoke.mjs` + `e2e-candidates-smoke.mjs` + `e2e-route-preview-smoke.mjs` + `e2e-multileg-locks-smoke.mjs` |
+| Automated smoke | `npm run qa:smoke` | `scripts/qa-smoke-all.mjs`: API build + `e2e-cors-functional.mjs` + `e2e-plan-log-contract.mjs` + `e2e-plan-job.mjs` + `e2e-replan-smoke.mjs` + `e2e-candidates-smoke.mjs` + `e2e-route-preview-smoke.mjs` + `e2e-multileg-locks-smoke.mjs` |
 
 ## Deferred / manual
 
-- **Docker Compose** (`docker-compose.mirror.yml`, `scripts/d1-verify-mirror.mjs`): run on demand or on a self-hosted runner with Docker.
+- **`scripts/poi-services-corridor-spike.mjs`** — optional latency check against a running POI Services instance (`POI_SERVICES_BASE_URL`); not part of the default PR gate.
+- **Docker / NAS deploy:** follow **`docs/d1-runbook.md`** for POI + planner networking; there is no mirror compose in this repo.
 - **gstack browse / UI screenshots:** manual or dedicated QA job per `TESTING.md`.
-- **Mirror C4 longrun / load** (`scripts/mirror-c4-*.mjs`): optional nightly or pre-release; may need `NREL_API_KEY` and Valhalla.
 
 ## Secrets in CI
 
-- Do **not** commit API keys. For NREL-dependent jobs, use CI secret stores and inject `NREL_API_KEY` only for workflows that need it.
+- Do **not** commit API keys.
 
 ## SLO / error budget (stub)
 
 Until a dashboard exists, use **structured JSON logs** from the API (grep/journal):
 
 - `plan_request_start` / `plan_request_end` / `plan_request_error` — latency and outcome.
-- `plan_source_selection`, `plan_fallback`, `mirror_staleness`, `dual_read_compare`, `rollback_triggered` — source routing health ([`local-mirror-architecture.md`](local-mirror-architecture.md) §C4).
+- `plan_source_selection` — POI-only source selection (see [`deprecate-nrel-overpass-mirror-travel-routing-adr.md`](designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md)).
 
 Define budgets (p95 `/plan` duration, fallback rate) in team process; wire metrics later.
 

@@ -1,5 +1,16 @@
 export type LatLng = { lat: number; lon: number };
 
+/**
+ * Internal multi-leg planner carry context.
+ * Optional so existing single-leg flows remain backward-compatible.
+ */
+export type TripLegPlanningContext = {
+  elapsedMinutesFromTripStart?: number;
+  tripLegIndex?: number;
+  tripLegCount?: number;
+  tripProgressMilesFromTripStart?: number;
+};
+
 export type StopType = "start" | "charge" | "sleep" | "end" | "waypoint";
 
 export type ItineraryStop = {
@@ -47,7 +58,10 @@ export type PlanTripRequest = {
    * Ids must appear in `candidates.chargers` from a prior plan for the same corridor (same id universe as NREL).
    */
   lockedChargersByLeg?: string[][];
-  /** When an overnight stop is inserted, prefer this hotel id (Overpass id) if it appears near the anchor. */
+  /**
+   * When an overnight stop is inserted, prefer this hotel id if it appears near the anchor.
+   * Use Overpass ids from `candidates.hotels`, or **`poi_services:hotel:<numeric>`** when corridor hotels come from POI Services.
+   */
   lockedHotelId?: string;
   /**
    * **Slice 2:** New plan start — device coords or a stop from the prior plan.
@@ -56,6 +70,11 @@ export type PlanTripRequest = {
   replanFrom?: ReplanFrom;
   /** Stops array from the immediately previous successful `POST /plan` — required for `replanFrom.stopId`. */
   previousStops?: ItineraryStop[];
+  /**
+   * When true with ≥2 waypoints (and no per-leg locks / hotel lock / replan), the planner may reorder
+   * intermediate stops to minimize a haversine leg-sum proxy before EV planning. See `debug.waypointOrderOptimization`.
+   */
+  optimizeWaypointOrder?: boolean;
 };
 
 export type CandidateCharger = {
@@ -63,14 +82,14 @@ export type CandidateCharger = {
   name: string;
   coords: LatLng;
   maxPowerKw?: number;
-  source: "nrel";
+  source: "nrel" | "poi_services";
 };
 
 export type CandidateHotel = {
   id: string;
   name: string;
   coords: LatLng;
-  source: "overpass";
+  source: "overpass" | "poi_services";
 };
 
 export type PlanTripCandidates = {
@@ -78,6 +97,32 @@ export type PlanTripCandidates = {
   hotels: CandidateHotel[];
   /** Which leg these candidates belong to when `waypoints` are used (0-based). */
   legIndex: number;
+};
+
+/**
+ * **Presentation-only** range leg: driving chunk from trip start or a **charge** departure to the next **charge**
+ * arrival or **end**. Derived from the least-time itinerary (not a separate optimizer). Same grouping will back
+ * future per-leg road display — see `docs/designs/range-based-segments-intent.md`.
+ */
+export type RangeLegSummary = {
+  index: number;
+  fromStopId: string;
+  toStopId: string;
+  /** Ordered stops along this leg (start → … → end of chunk), ids only */
+  stopIds: string[];
+  travelTimeMinutes: number;
+  chargeTimeMinutes: number;
+  /** Sum of straight-line miles between consecutive stops in this leg (approximation, not road distance) */
+  chordMilesApprox: number;
+  /**
+   * Pillar 1 prep — max straight-line miles of any **single** driving sub-hop inside this chunk
+   * (compare to `usableRangeMiles`). Omitted when `PLAN_RANGE_LEG_METRICS=false` or metrics disabled.
+   */
+  maxHopChordMilesApprox?: number;
+  /** `EV_RANGE_MILES * (1 - CHARGE_BUFFER_SOC)` used for the comparison (same for all legs in the plan). */
+  usableRangeMiles?: number;
+  /** True when `maxHopChordMilesApprox > usableRangeMiles` (chord sanity vs one-charge budget). */
+  maxHopExceedsRangeBudget?: boolean;
 };
 
 export type PlanTripResponse = {
@@ -99,6 +144,11 @@ export type PlanTripResponse = {
   };
   /** Present when `includeCandidates` was requested and planning succeeded for at least one leg. */
   candidates?: PlanTripCandidates;
+  /**
+   * **Presentation layer:** trip sliced at **charge** boundaries (rolling origin after each charge).
+   * Omitted on error or when the itinerary cannot be grouped. Also mirrored under **`debug.rangeLegs`**.
+   */
+  rangeLegs?: RangeLegSummary[];
 };
 
 /** Response shape for `POST /candidates` (Slice 3) — candidates only, no itinerary. */
@@ -131,6 +181,10 @@ export type RoutePreviewBody = {
    * Omitted when the route ends within the first horizon or there are no remaining maneuvers.
    */
   nextHorizon?: RoutePreviewHorizon;
+  /**
+   * Web-only: merged multi-hop preview while some hops are still loading (`fetchMergedRoutePreview` partials).
+   */
+  partialPreviewMeta?: { loadedSegments: number; totalSegments: number };
 };
 
 export type RoutePreviewApiResponse = {

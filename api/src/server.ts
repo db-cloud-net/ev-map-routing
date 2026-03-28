@@ -4,9 +4,18 @@ import { z } from "zod";
 import { randomUUID } from "crypto";
 import { execSync } from "child_process";
 import { planTrip, planTripCandidatesOnly } from "./planner/planTrip";
+import {
+  appendPlanJobCheckpoint,
+  completePlanJob,
+  createPlanJob,
+  failPlanJob,
+  getPlanJob,
+  subscribePlanJobStream
+} from "./planJobStore";
 import { buildRoutePreviewSingleLeg } from "./planner/routePreview";
 import { withTimeout } from "./planTimeout";
 import { ProviderCallMetrics, runPlanWithProviderMetrics } from "./services/providerCallMetrics";
+import { isPoiServicesCorridorEnabled } from "./services/poiServicesClient";
 import path from "path";
 import { existsSync } from "fs";
 
@@ -15,7 +24,7 @@ import dotenv from "dotenv";
 /**
  * Find repo-root `.env` whether you start from workspace root (`npm -w api run start`),
  * from `api/`, or run compiled `node dist/api/src/server.js` (deep `__dirname`).
- * A shallow `../..` from dist is **not** the repo root — that missed `.env` and caused empty `NREL_API_KEY`.
+ * A shallow `../..` from dist is **not** the repo root — that missed `.env` and caused empty config.
  */
 function findEnvFilePath(): string | undefined {
   const candidates: string[] = [];
@@ -52,11 +61,9 @@ const e2eKeysToRestore = [
   "PORT",
   "DEPLOYMENT_ENV",
   "CORS_ORIGIN",
-  "SOURCE_ROUTING_MODE",
   "PLAN_LOG_REQUESTS",
   "PLAN_TOTAL_TIMEOUT_MS",
-  "MIRROR_ROOT",
-  "SOURCE_ROUTING_MODE_FORCE"
+  "POI_SERVICES_BASE_URL"
 ] as const;
 const e2eEnvSnapshot: Partial<Record<(typeof e2eKeysToRestore)[number], string>> = {};
 if (e2eSpawnPortLock && /^\d+$/.test(e2eSpawnPortLock)) {
@@ -68,7 +75,7 @@ if (e2eSpawnPortLock && /^\d+$/.test(e2eSpawnPortLock)) {
 
 const envPath = findEnvFilePath();
 if (envPath) {
-  // Prefer values from the file when the shell has stale/empty vars (e.g. NREL_API_KEY="").
+  // Prefer values from the file when the shell has stale/empty vars.
   dotenv.config({ path: envPath, override: true });
 } else {
   dotenv.config();
@@ -87,6 +94,34 @@ if (e2eSpawnPortLock && /^\d+$/.test(e2eSpawnPortLock)) {
 const deploymentEnv = (process.env.DEPLOYMENT_ENV ?? "dev-local").trim().toLowerCase();
 if (envPath && deploymentEnv !== "production" && deploymentEnv !== "prod") {
   console.log(`[env] loaded ${envPath}`);
+}
+console.log(
+  JSON.stringify({
+    event: "auto_waypoints_config",
+    deploymentEnv,
+    enabled: (process.env.ENABLE_AUTO_WAYPOINTS ?? "false").toLowerCase() === "true",
+    thresholdMi: Number(process.env.AUTO_WAYPOINT_THRESHOLD_MI ?? "500")
+  })
+);
+console.log(
+  JSON.stringify({
+    event: "poi_corridor_config",
+    poiCorridorEnabled: isPoiServicesCorridorEnabled()
+  })
+);
+
+const isProdDeployment =
+  deploymentEnv === "production" || deploymentEnv === "prod";
+// E2E spawns (e.g. CORS scenarios) set E2E_SPAWN_PORT without a real POI stack — skip fatal.
+if (
+  isProdDeployment &&
+  !isPoiServicesCorridorEnabled() &&
+  !(e2eSpawnPortLock && /^\d+$/.test(e2eSpawnPortLock))
+) {
+  console.error(
+    "[fatal] Production requires POI_SERVICES_BASE_URL (and corridor enabled) for trip planning."
+  );
+  process.exit(1);
 }
 
 const app = express();
@@ -134,7 +169,7 @@ app.get("/health", (_req, res) => {
     ok: true,
     debug: {
       cwd: process.cwd(),
-      nrelApiKeyPresent: Boolean(process.env.NREL_API_KEY)
+      poiCorridorEnabled: isPoiServicesCorridorEnabled()
     }
   });
 });
@@ -172,7 +207,11 @@ const planSchema = z
       .optional(),
     lockedHotelId: z.string().min(1).max(200).optional(),
     replanFrom: replanFromSchema.optional(),
-    previousStops: z.array(itineraryStopSchema).max(200).optional()
+    previousStops: z.array(itineraryStopSchema).max(200).optional(),
+    /** When true, respond **202** with `jobId` and run planning in the background; poll `GET /plan/jobs/:jobId`. */
+    planJob: z.boolean().optional(),
+    /** Multi-waypoint: minimize haversine leg-sum proxy order (time-budgeted); ignored with locks or replan. */
+    optimizeWaypointOrder: z.boolean().optional()
   })
   .superRefine((data, ctx) => {
     const hasStart = (data.start ?? "").trim().length > 0;
@@ -271,7 +310,7 @@ app.post("/route-preview", async (req, res) => {
     );
     const totalMs = Number(process.env.ROUTE_PREVIEW_TOTAL_TIMEOUT_MS ?? "90000");
     providerMetrics = new ProviderCallMetrics();
-    const result = await runPlanWithProviderMetrics(providerMetrics, () =>
+    const result = await runPlanWithProviderMetrics(providerMetrics, async () =>
       withTimeout(
         buildRoutePreviewSingleLeg({
           requestId,
@@ -358,9 +397,9 @@ app.post("/candidates", async (req, res) => {
         previousStopsCount: parsed.previousStops?.length ?? 0
       })
     );
-    const totalMs = Number(process.env.PLAN_TOTAL_TIMEOUT_MS ?? 120000);
+    const totalMs = Number(process.env.PLAN_TOTAL_TIMEOUT_MS ?? 300000);
     providerMetrics = new ProviderCallMetrics();
-    const result = await runPlanWithProviderMetrics(providerMetrics, () =>
+    const result = await runPlanWithProviderMetrics(providerMetrics, async () =>
       withTimeout(
         planTripCandidatesOnly({
           requestId,
@@ -426,6 +465,336 @@ app.post("/candidates", async (req, res) => {
   }
 });
 
+type PlanBodyParsed = z.infer<typeof planSchema>;
+
+async function runPlanJobInBackground(args: {
+  jobId: string;
+  requestId: string;
+  responseVersion: string;
+  startedAt: number;
+  parsed: PlanBodyParsed;
+}): Promise<void> {
+  const { jobId, requestId, responseVersion, startedAt, parsed } = args;
+  const providerMetrics = new ProviderCallMetrics();
+  const checkpointAgg = {
+    total: 0,
+    byKind: new Map<string, number>(),
+    byOutcome: new Map<string, number>(),
+    bySolverStatus: new Map<string, number>(),
+    constrainedAttempted: 0,
+    constrainedUsed: 0,
+    maxPartialStopsCount: 0,
+    maxPartialLegsCount: 0
+  };
+  const inc = (m: Map<string, number>, k: string | undefined) => {
+    if (!k) return;
+    m.set(k, (m.get(k) ?? 0) + 1);
+  };
+  const mapToObject = (m: Map<string, number>) =>
+    Object.fromEntries([...m.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+  const summarizeAttemptForEvent = (attempt: Record<string, unknown>) => {
+    const pickNumber = (k: string) =>
+      typeof attempt[k] === "number" ? (attempt[k] as number) : undefined;
+    const pickString = (k: string) =>
+      typeof attempt[k] === "string" ? (attempt[k] as string) : undefined;
+    const pickBool = (k: string) =>
+      typeof attempt[k] === "boolean" ? (attempt[k] as boolean) : undefined;
+    return {
+      outcome: pickString("outcome"),
+      solverStatus: pickString("solverStatus"),
+      errorCode: pickString("errorCode"),
+      constrainedModeAttempted: pickBool("constrainedModeAttempted"),
+      constrainedUsed: pickBool("constrainedUsed"),
+      overnightIndex: pickNumber("overnightIndex"),
+      stopsCount: pickNumber("stopsCount"),
+      legsCount: pickNumber("legsCount"),
+      chargeStopsCount: pickNumber("chargeStopsCount"),
+      chargersForSegmentCappedCount: pickNumber("chargersForSegmentCappedCount"),
+      corridorChargersTotal: pickNumber("corridorChargersTotal"),
+      edgeGraphChargersCount: pickNumber("edgeGraphChargersCount"),
+      fallbackPoolCount: pickNumber("fallbackPoolCount"),
+      fallbackCapAfterConstrainedNoPath: pickNumber("fallbackCapAfterConstrainedNoPath"),
+      message:
+        typeof attempt.errorMessage === "string"
+          ? (attempt.errorMessage as string)
+          : undefined
+    };
+  };
+  try {
+    const result = await runPlanWithProviderMetrics(providerMetrics, async () =>
+      planTrip({
+        requestId,
+        start: parsed.start?.trim() ? parsed.start : undefined,
+        end: parsed.end,
+        responseVersion,
+        waypoints: parsed.waypoints,
+        includeCandidates: parsed.includeCandidates,
+        lockedChargersByLeg: parsed.lockedChargersByLeg,
+        lockedHotelId: parsed.lockedHotelId,
+        replanFrom: parsed.replanFrom,
+        previousStops: parsed.previousStops,
+        onSolverAttempt: (ev) => {
+          const kind = String((ev.attempt as Record<string, unknown>)?.kind ?? "");
+          const reason = String((ev.attempt as Record<string, unknown>)?.reason ?? "");
+          const ps = (ev.attempt as Record<string, unknown>)?.partialSnapshot as
+            | { stops?: unknown[]; legs?: unknown[] }
+            | undefined;
+          const summary = summarizeAttemptForEvent(ev.attempt as Record<string, unknown>);
+          checkpointAgg.total++;
+          inc(checkpointAgg.byKind, kind || undefined);
+          inc(checkpointAgg.byOutcome, summary.outcome);
+          inc(checkpointAgg.bySolverStatus, summary.solverStatus);
+          if (summary.constrainedModeAttempted) checkpointAgg.constrainedAttempted++;
+          if (summary.constrainedUsed) checkpointAgg.constrainedUsed++;
+          const partialStopsCount = Array.isArray(ps?.stops) ? ps.stops.length : undefined;
+          const partialLegsCount = Array.isArray(ps?.legs) ? ps.legs.length : undefined;
+          if (typeof partialStopsCount === "number") {
+            checkpointAgg.maxPartialStopsCount = Math.max(
+              checkpointAgg.maxPartialStopsCount,
+              partialStopsCount
+            );
+          }
+          if (typeof partialLegsCount === "number") {
+            checkpointAgg.maxPartialLegsCount = Math.max(
+              checkpointAgg.maxPartialLegsCount,
+              partialLegsCount
+            );
+          }
+          console.log(
+            JSON.stringify({
+              event: "plan_job_checkpoint",
+              deploymentEnv,
+              requestId,
+              responseVersion,
+              jobId,
+              legIndex: ev.legIndex,
+              kind,
+              reason: reason || undefined,
+              partialStopsCount,
+              partialLegsCount,
+              attemptSummary: summary
+            })
+          );
+          appendPlanJobCheckpoint(jobId, ev);
+        }
+      })
+    );
+    console.log(
+      JSON.stringify({
+        event: "plan_request_end",
+        deploymentEnv,
+        requestId,
+        responseVersion,
+        jobId,
+        planJob: true,
+        status: result.status,
+        durationMs: Date.now() - startedAt,
+        stopsCount: result.stops?.length ?? 0,
+        overnightStopsCount: result.totals?.overnightStopsCount ?? 0
+      })
+    );
+    console.log(
+      JSON.stringify({
+        event: "plan_job_terminal_summary",
+        deploymentEnv,
+        requestId,
+        responseVersion,
+        jobId,
+        status: result.status,
+        durationMs: Date.now() - startedAt,
+        checkpointsTotal: checkpointAgg.total,
+        checkpointsByKind: mapToObject(checkpointAgg.byKind),
+        outcomes: mapToObject(checkpointAgg.byOutcome),
+        solverStatuses: mapToObject(checkpointAgg.bySolverStatus),
+        constrainedAttempted: checkpointAgg.constrainedAttempted,
+        constrainedUsed: checkpointAgg.constrainedUsed,
+        maxPartialStopsCount: checkpointAgg.maxPartialStopsCount,
+        maxPartialLegsCount: checkpointAgg.maxPartialLegsCount
+      })
+    );
+    completePlanJob(jobId, {
+      ...result,
+      debug: {
+        ...(result.debug ?? {}),
+        ...providerMetrics.toDebugPayload()
+      }
+    });
+  } catch (err) {
+    const isTimeout =
+      err instanceof Error &&
+      /exceeded time limit|timed out|ECONNABORTED/i.test(err.message);
+    console.log(
+      JSON.stringify({
+        event: "plan_request_error",
+        deploymentEnv,
+        requestId,
+        responseVersion,
+        jobId,
+        planJob: true,
+        durationMs: Date.now() - startedAt,
+        message: err instanceof Error ? err.message : String(err),
+        timeout: isTimeout
+      })
+    );
+    console.log(
+      JSON.stringify({
+        event: "plan_job_terminal_summary",
+        deploymentEnv,
+        requestId,
+        responseVersion,
+        jobId,
+        status: "error",
+        durationMs: Date.now() - startedAt,
+        timeout: isTimeout,
+        checkpointsTotal: checkpointAgg.total,
+        checkpointsByKind: mapToObject(checkpointAgg.byKind),
+        outcomes: mapToObject(checkpointAgg.byOutcome),
+        solverStatuses: mapToObject(checkpointAgg.bySolverStatus),
+        constrainedAttempted: checkpointAgg.constrainedAttempted,
+        constrainedUsed: checkpointAgg.constrainedUsed,
+        maxPartialStopsCount: checkpointAgg.maxPartialStopsCount,
+        maxPartialLegsCount: checkpointAgg.maxPartialLegsCount,
+        errorMessage: err instanceof Error ? err.message : String(err)
+      })
+    );
+    const msg =
+      err instanceof Error ? err.message : "Unexpected error planning trip";
+    const statusCode = isTimeout ? 408 : 400;
+    const errorDebug = {
+      ...(isTimeout ? { reason: "planner_timeout" } : {}),
+      ...providerMetrics.toDebugPayload()
+    };
+    failPlanJob(jobId, {
+      message: msg,
+      httpStatus: statusCode,
+      debug: Object.keys(errorDebug).length > 0 ? errorDebug : undefined
+    });
+  }
+}
+
+app.get("/plan/jobs/:jobId", (req, res) => {
+  const job = getPlanJob(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({
+      status: "error",
+      message: "Unknown or expired plan job id"
+    });
+  }
+  const payload: Record<string, unknown> = {
+    jobId: req.params.jobId,
+    requestId: job.requestId,
+    responseVersion: job.responseVersion,
+    status: job.status,
+    checkpoints: job.checkpoints
+  };
+  if (job.status === "complete" && job.result) {
+    payload.result = job.result;
+  }
+  if (job.status === "error" && job.error) {
+    payload.message = job.error.message;
+    payload.httpStatus = job.error.httpStatus;
+    if (job.error.debug && Object.keys(job.error.debug).length > 0) {
+      payload.debug = job.error.debug;
+    }
+    if (job.error.lastPartialSnapshot) {
+      payload.lastPartialSnapshot = job.error.lastPartialSnapshot;
+    }
+  }
+  res.status(200).json(payload);
+});
+
+/** Keep long `planJob` streams alive through proxies; client resets idle timeout on `type: "heartbeat"`. */
+function planJobSseHeartbeatIntervalMs(): number {
+  const raw = process.env.PLAN_JOB_SSE_HEARTBEAT_MS;
+  if (raw === undefined || raw === "") return 25_000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
+}
+
+function startPlanJobStreamHeartbeat(
+  res: express.Response,
+  format: "ndjson" | "sse"
+): () => void {
+  const ms = planJobSseHeartbeatIntervalMs();
+  if (ms <= 0) return () => {};
+  const id = setInterval(() => {
+    if (res.writableEnded) return;
+    const payload = JSON.stringify({ type: "heartbeat", t: Date.now() });
+    try {
+      if (format === "sse") {
+        res.write(`data: ${payload}\n\n`);
+      } else {
+        res.write(`${payload}\n`);
+      }
+    } catch {
+      clearInterval(id);
+    }
+  }, ms);
+  return () => clearInterval(id);
+}
+
+app.get("/plan/jobs/:jobId/stream", (req, res) => {
+  const job = getPlanJob(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({
+      status: "error",
+      message: "Unknown or expired plan job id"
+    });
+  }
+  res.status(200);
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("X-Accel-Buffering", "no");
+  const stopHeartbeat = startPlanJobStreamHeartbeat(res, "ndjson");
+  const unsub = subscribePlanJobStream(
+    req.params.jobId,
+    (obj) => {
+      res.write(`${JSON.stringify(obj)}\n`);
+    },
+    () => {
+      stopHeartbeat();
+      res.end();
+    }
+  );
+  req.on("close", () => {
+    stopHeartbeat();
+    unsub();
+  });
+});
+
+/** Server-Sent Events — same JSON payloads as NDJSON stream (`data:` lines); EventSource-friendly. */
+app.get("/plan/jobs/:jobId/events", (req, res) => {
+  const job = getPlanJob(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({
+      status: "error",
+      message: "Unknown or expired plan job id"
+    });
+  }
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.write("retry: 3000\n\n");
+  const stopHeartbeat = startPlanJobStreamHeartbeat(res, "sse");
+  const unsub = subscribePlanJobStream(
+    req.params.jobId,
+    (obj) => {
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    },
+    () => {
+      stopHeartbeat();
+      res.end();
+    }
+  );
+  req.on("close", () => {
+    stopHeartbeat();
+    unsub();
+  });
+});
+
 app.post("/plan", async (req, res) => {
   const requestId =
     (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
@@ -440,7 +809,9 @@ app.post("/plan", async (req, res) => {
       parsed.includeCandidates ||
       (parsed.lockedChargersByLeg && parsed.lockedChargersByLeg.length > 0) ||
       parsed.lockedHotelId ||
-      parsed.replanFrom
+      parsed.replanFrom ||
+      parsed.planJob ||
+      parsed.optimizeWaypointOrder
         ? "v2-1"
         : "mvp-1";
     const replanLog =
@@ -455,6 +826,7 @@ app.post("/plan", async (req, res) => {
         deploymentEnv,
         requestId,
         responseVersion,
+        planJob: Boolean(parsed.planJob),
         startTextPresent: Boolean(parsed.start?.trim()),
         end: parsed.end,
         waypointsCount: parsed.waypoints?.length ?? 0,
@@ -465,25 +837,37 @@ app.post("/plan", async (req, res) => {
         previousStopsCount: parsed.previousStops?.length ?? 0
       })
     );
-    const totalMs = Number(process.env.PLAN_TOTAL_TIMEOUT_MS ?? 120000);
+
+    if (parsed.planJob === true) {
+      const jobId = randomUUID();
+      createPlanJob({ jobId, requestId, responseVersion });
+      void runPlanJobInBackground({ jobId, requestId, responseVersion, startedAt, parsed });
+      return res.status(202).json({
+        jobId,
+        requestId,
+        responseVersion,
+        status: "running",
+        pollUrl: `/plan/jobs/${jobId}`,
+        streamUrl: `/plan/jobs/${jobId}/stream`,
+        eventsUrl: `/plan/jobs/${jobId}/events`
+      });
+    }
+
     providerMetrics = new ProviderCallMetrics();
-    const result = await runPlanWithProviderMetrics(providerMetrics, () =>
-      withTimeout(
-        planTrip({
-          requestId,
-          start: parsed.start?.trim() ? parsed.start : undefined,
-          end: parsed.end,
-          responseVersion,
-          waypoints: parsed.waypoints,
-          includeCandidates: parsed.includeCandidates,
-          lockedChargersByLeg: parsed.lockedChargersByLeg,
-          lockedHotelId: parsed.lockedHotelId,
-          replanFrom: parsed.replanFrom,
-          previousStops: parsed.previousStops
-        }),
-        totalMs,
-        `Planner exceeded time limit (${totalMs}ms). Try a shorter route or retry later.`
-      )
+    const result = await runPlanWithProviderMetrics(providerMetrics, async () =>
+      planTrip({
+        requestId,
+        start: parsed.start?.trim() ? parsed.start : undefined,
+        end: parsed.end,
+        responseVersion,
+        waypoints: parsed.waypoints,
+        includeCandidates: parsed.includeCandidates,
+        lockedChargersByLeg: parsed.lockedChargersByLeg,
+        lockedHotelId: parsed.lockedHotelId,
+        replanFrom: parsed.replanFrom,
+        previousStops: parsed.previousStops,
+        optimizeWaypointOrder: parsed.optimizeWaypointOrder
+      })
     );
     console.log(
       JSON.stringify({

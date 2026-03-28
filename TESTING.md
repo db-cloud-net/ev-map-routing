@@ -1,11 +1,13 @@
 # Testing (QA + E2E)
 
+> **Planner corridor source:** With **`POI_SERVICES_BASE_URL`** set, **POI Services** is the runtime source for corridor DC-fast chargers, hotels, and optional pairs/edges. This app does **not** ship live NREL/Overpass clients or **`SOURCE_ROUTING_MODE`** (see **[`docs/designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md`](docs/designs/deprecate-nrel-overpass-mirror-travel-routing-adr.md)**). Some paragraphs below still mention mirror/NREL for **historical** QA notes — prefer POI + Valhalla.
+
 This project has two complementary verification layers:
 
 1. **Backend functional E2E invariants** (fast fail, no screenshots)
 2. **UI screenshot QA** (via gstack `/qa`) for visual/interaction regressions
 
-The backend functional layer is especially important because external services (NREL/Overpass/Valhalla) can be slow or flaky. We assert invariants instead of exact itineraries.
+The backend functional layer is especially important because external services (POI Services, Valhalla, geocode) can be slow or flaky. We assert invariants instead of exact itineraries.
 
 ---
 
@@ -38,7 +40,7 @@ The script builds **`browse`** and installs **Playwright Chromium**. After setup
 
 **Each QA session (before `/qa` or browse)**
 
-1. **`.env`** at repo root: copy from **`.env.example`**, set **`NREL_API_KEY`**, **`CORS_ORIGIN=http://localhost:3000`**, **`DEPLOYMENT_ENV=dev-local`** (see below for planner URLs if you use Valhalla).
+1. **`.env`** at repo root: copy from **`.env.example`**, set **`POI_SERVICES_BASE_URL`** for corridor planning, **`CORS_ORIGIN=http://localhost:3000`**, **`DEPLOYMENT_ENV=dev-local`** (see below for planner URLs if you use Valhalla).
 2. **Two terminals** from repo root: **`npm run dev:api`** (port **3001**) and **`npm run dev:web`** (port **3000**).
 3. **Sanity check:** open **`http://localhost:3000/map`** in a browser or run browse:
    - PowerShell: `& "$env:USERPROFILE\.claude\skills\gstack\browse\dist\browse.exe" goto http://localhost:3000/map`
@@ -49,7 +51,7 @@ The script builds **`browse`** and installs **Playwright Chromium**. After setup
 
 ### Environment variable source
 
-Keep secrets in **`.env` at the repo root** (same folder as the root `package.json`). The API resolves this file whether you run `npm -w api run start` from the repo root or `npm run start` from `api/` — compiled output lives under `api/dist/...`, so older single-path fallback could miss `.env` and leave `NREL_API_KEY` unset (see `findEnvFilePath` in `api/src/server.ts`).
+Keep secrets in **`.env` at the repo root** (same folder as the root `package.json`). The API resolves this file whether you run `npm -w api run start` from the repo root or `npm run start` from `api/` — compiled output lives under `api/dist/...`, so older single-path fallback could miss `.env` and leave expected keys unset (see `findEnvFilePath` in `api/src/server.ts`).
 
 On **Windows**, if the key still looks missing, check for a **user/system** env var set to empty (the server uses `override: true` when loading `.env` so file values win over stale empty vars).
 
@@ -63,17 +65,18 @@ For non-secret QA defaults, prefer documenting them in this file and/or using th
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `PLAN_TOTAL_TIMEOUT_MS` | `300000` | API: hard cap on `planTrip` / candidates wall time; responds with HTTP **408** + `debug.reason: planner_timeout` when exceeded (default **5 min**; align with web client) |
-| **Web (`NEXT_PUBLIC_*`)** | — | **Full table:** **[`docs/WEB_SWITCHES.md`](docs/WEB_SWITCHES.md)** — set in **`web/.env.local`** (build-time). Includes **`NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS`**, prefetch toggles, **`NEXT_PUBLIC_PLAN_USE_JOB`**, optional **`NEXT_PUBLIC_API_BASE`**. Must align **`NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS`** ≥ **`PLAN_TOTAL_TIMEOUT_MS`** or the client cancels early — on abort **no** response body (including **`debug.providerCalls`**) is read. |
+| `PLAN_SEGMENT_TIMEOUT_MS` | `180000` | API: per-segment solver budget for `planTrip` (default **3 min**). No global `planTrip` wall-clock timeout; timeout errors surface as segment-level failures. |
+| `PLAN_RANGE_LEG_CHARGE_STOP_PENALTY_MINUTES` | `0` | **Pillar 1 slice C:** add this many **minutes** to the segment solver’s cost for **each** departure from a charger (after charging). Default **0** preserves previous path selection. When **`> 0`**, **`debug.rangeLegOptimizer`** is set. See **`docs/designs/range-leg-incremental-trust-adr.md`**. |
+| `PLAN_RANGE_LEG_FEASIBILITY_MARGIN_FRAC` | `0` | **Pillar 1 slice D:** multiply all **linear** SOC distance budgets by **`(1 − margin)`** (clamped to **`0…0.999`**). Default **0** = unchanged feasibility. When **`> 0`**, **`debug.rangeLegFeasibility`** is set. Large values can make **`No feasible itinerary`** more likely. Same ADR as slice C. |
+| `PLAN_SOC_CARRY_CHAINED_SEGMENTS` | `true` | **Pillar 1 slice E:** for **locked** charger chains, pass **`initialDepartSocFraction`** into each **`planLeastTimeSegment`** after the first (linear replay from the previous segment). Set **`false`** for legacy “full pack at every lock boundary.” **`debug.socCarryChainedSegments`** when active. |
+| `PLAN_SOC_CARRY_OVERNIGHT_SEGMENTS` | `true` | **Pillar 1 slice F:** for **`planTripOneLeg`** overnight iterations after the first and the **remainder** solve, pass **`initialDepartSocFraction`** from replay of the itinerary so far toward **`end`**. Set **`false`** for legacy full pack at each overnight boundary. **`debug.socCarryOvernightSegments`** when active. |
+| **Web (`NEXT_PUBLIC_*`)** | — | **Full table:** **[`docs/WEB_SWITCHES.md`](docs/WEB_SWITCHES.md)** — set in **`web/.env.local`** (build-time). Includes **`NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS`**, prefetch toggles, **`NEXT_PUBLIC_PLAN_USE_JOB`**, optional **`NEXT_PUBLIC_API_BASE`**. In `planJob` mode, `NEXT_PUBLIC_PLAN_CLIENT_TIMEOUT_MS` is an **idle timeout** (resets on checkpoints and on SSE **`heartbeat`** events from the API). On client abort, no response body (including `debug.providerCalls`) is read. |
 
-**Async `planJob` QA:** With **`NEXT_PUBLIC_PLAN_USE_JOB=true`**, **`GET /plan/jobs/:id`** may emit **`attempt.kind === "partial_route"`** checkpoints (**`partialSnapshot`**: **`stops`**, **`legs`**, **`rangeLegs`**) so the map/itinerary **updates while `running`**; the final plan still arrives only in **`result`** when **`complete`**. Contract: **[`docs/V2_API.md`](docs/V2_API.md)** · **[`docs/MAP_AND_NAV.md`](docs/MAP_AND_NAV.md)**.
+**Pillar 1 manual compare:** On a fixed long-corridor trip, run once with **`PLAN_RANGE_LEG_CHARGE_STOP_PENALTY_MINUTES=0`** and again with a small positive value (for example **5–15**); compare **`debug.rangeLegs`** (row counts, max hop) and **`debug.socReplay`** (infeasibility flags). Fewer intermediate charges appear only when the penalty is large enough relative to travel-time differences—do not assume a larger penalty is always better.
 
-**Charger + POI source routing (API / `planTrip`)** — see **[`docs/local-mirror-architecture.md`](docs/local-mirror-architecture.md)** §A4 and **[`docs/ROUTING_UX_SPEC.md`](docs/ROUTING_UX_SPEC.md)** §2.
+**Async `planJob` QA:** With **`NEXT_PUBLIC_PLAN_USE_JOB=true`**, **`GET /plan/jobs/:id`** may emit **`attempt.kind === "partial_route"`** checkpoints (**`partialSnapshot`**: **`stops`**, **`legs`**, **`rangeLegs`**) so the map/itinerary **updates while `running`**; the final plan still arrives only in **`result`** when **`complete`**. **`GET /plan/jobs/:id/stream`** (**NDJSON**) and **`GET /plan/jobs/:id/events`** (**SSE**) replay the same **JSON** payloads until **`type: "complete"`** or **`type: "error"`**; **`202`** includes **`streamUrl`** and **`eventsUrl`**. Contract: **[`docs/V2_API.md`](docs/V2_API.md)** · **[`docs/MAP_AND_NAV.md`](docs/MAP_AND_NAV.md)**.
 
-| Variable | Default | Role |
-|----------|---------|------|
-| `SOURCE_ROUTING_MODE` | *(unset → `remote_only`)* | `remote_only` — live NREL + Overpass. `local_primary_fallback_remote` — mirror first, allow-listed fallback to remote; **also** if the mirror returns **zero** chargers for a corridor query, the API uses **NREL** so trips outside snapshot coverage still get DC-fast candidates. `dual_read_compare` — same **empty-mirror → NREL** behavior for chargers (compare logging still runs when both return). **`local_primary_fail_closed`** — mirror only (no NREL when mirror loads; use for strict offline tests). Invalid values behave as **`remote_only`**. |
-| `SOURCE_ROUTING_MODE_FORCE` | *(unset)* | Set to **`remote_only`** for emergency rollback (C3); see **`sourceRouter.ts`**. |
+**Corridor + POI (API / `planTrip`):** **`resolvePlanProviders`** is **POI-only** (`poi_only`). There is no **`SOURCE_ROUTING_MODE`** or mirror tier in current **`api/src/**`**. Corridor radius and sampling: **`CORRIDOR_SEARCH_RADIUS_MILES`** (deprecated alias **`NREL_RADIUS_MILES`**), **`CORRIDOR_STEP_MILES`**, **`CORRIDOR_MAX_SAMPLE_POINTS`**, **`CANDIDATE_CHARGERS_CAP`** — see **`.env.example`**.
 
 **Per-stage `/plan` budgets (server-side)** — enforced inside `planTrip` / clients; tune if a stage dominates latency or hits upstream limits.
 
@@ -83,18 +86,15 @@ For non-secret QA defaults, prefer documenting them in this file and/or using th
 | `PLAN_VALHALLA_POLYLINE_TIMEOUT_MS` | `60000` | First Valhalla `/route` for corridor polyline (`getRoutePolyline`) |
 | `PLAN_VALHALLA_LEG_TIMEOUT_MS` | `30000` | Each Valhalla `/route` in the segment solver (`getTravelTimeMinutes` / `getTravelDistanceMiles`) |
 | `VALHALLA_BASE_URL` | `http://valhalla:8002` (code default) | Valhalla origin (port usually **8002**). See **[docs/VALHALLA.md](docs/VALHALLA.md)**. |
-| `NREL_FETCH_TIMEOUT_MS` | `60000` | Each NREL nearest-point / route request (`RemoteNrelAdapter`; passed as abort budget per call) |
-| `OVERPASS_FETCH_TIMEOUT_MS` | `60000` | Each Overpass hotel query (`RemoteOverpassAdapter`) |
-| `POI_SERVICES_BASE_URL` | *(unset)* | When set, corridor POI may use POI Services **`POST /corridor/query`** instead of NREL for DC-fast sampling (see **`.env.example`** for **`USE_POI_SERVICES_CORRIDOR`**, **`POI_SERVICES_USE_PAIRS`**, **`POI_SERVICES_FALLBACK_TO_NREL`** default **false**, **`POI_SERVICES_USE_EDGES`**). On Docker NAS (**`prod-network`**), use the service URL, e.g. **`http://poi:8010`** (see **`docs/d1-runbook.md`**). |
+| `POI_SERVICES_BASE_URL` | *(unset)* | When set, corridor chargers/hotels use POI Services **`POST /corridor/query`** (see **`.env.example`** for **`USE_POI_SERVICES_CORRIDOR`**, **`POI_SERVICES_USE_PAIRS`**, **`POI_SERVICES_USE_EDGES`**). On Docker NAS (**`prod-network`**), e.g. **`http://poi:8010`** (**[`docs/d1-runbook.md`](docs/d1-runbook.md)**). |
 | `POI_SERVICES_USE_PAIRS` | `true` | When POI corridor is enabled, request the **`pairs`** layer (hotel↔DCFC) unless set to **`false`**. |
-| `POI_SERVICES_FALLBACK_TO_NREL` | `false` | If **`true`**, fall back to NREL corridor sampling when POI fails or returns no chargers; default is fail-closed (**`POI_SERVICES_*`** errors). |
 | `POI_SERVICES_TIMEOUT_MS` | `30000` | HTTP budget for each **`/corridor/query`** call (`api/src/services/poiServicesClient.ts`). |
 
 With `POI_REVIEW_LOG=true`, tail `logs/poi-corridor-review.ndjson` to review POI corridor sleep-stop join coverage (e.g. `sleep_dcfc_corridor_miss`), or run `node scripts/poi-review-log-summary.mjs` for event and `resolvedVia` rollups.
 
-**`debug.providerCalls` (MVP):** On successful and many error responses, `debug` includes **`providerCalls`** — per upstream **`valhalla`**, **`nrel`**, **`overpass`**, **`geocode`** (Nominatim), and (when configured) **`poi_services`**: **`calls`**, **`totalMs`**, **`avgMs`**, and **`durationsMs`** (per HTTP request; list truncated after 200 entries with a tail marker). Implemented in **`api/src/services/providerCallMetrics.ts`** and merged in **`api/src/server.ts`**.
+**`debug.providerCalls` (MVP):** On successful and many error responses, `debug` includes **`providerCalls`** — **`valhalla`**, **`geocode`** (Nominatim), **`poi_services`**: **`calls`**, **`totalMs`**, **`avgMs`**, and **`durationsMs`** (truncated after 200 entries with a tail marker). Implemented in **`api/src/services/providerCallMetrics.ts`** and merged in **`api/src/server.ts`**.
 
-**Planner error: “No feasible itinerary for segment”** — the least-time segment solver could not chain **start → DC chargers → end** under the current **EV range / buffer** and **corridor charger pool** (common on **very long** legs or **sparse** NREL coverage). The API response **`message`** includes the feasibility model line (Valhalla road-distance vs haversine). Inspect **`debug.noFeasibleItinerary`** for **`chargerNodesCount`**, **`reachableEdgeCount`**, **`endWithinRangeCount`**, etc. Mitigations: raise **`EV_RANGE_MILES`** (or lower **`CHARGE_BUFFER_SOC`** slightly), increase corridor sampling (**`NREL_RADIUS_MILES`**, **`corridorMaxSamples`**, **`CANDIDATE_CHARGERS_CAP`** in **`api/src/planner/corridorCandidates.ts`** / env), ensure **NREL** returns enough DC-fast sites along the corridor, or **split** the trip with **waypoints** so each segment is shorter.
+**Planner error: “No feasible itinerary for segment”** — the least-time segment solver could not chain **start → DC chargers → end** under the current **EV range / buffer** and **corridor charger pool** (common on **very long** legs or **sparse** corridor coverage). The API response **`message`** includes the feasibility model line (Valhalla road-distance vs haversine). Inspect **`debug.noFeasibleItinerary`** for **`chargerNodesCount`**, **`reachableEdgeCount`**, **`endWithinRangeCount`**, etc. Mitigations: raise **`EV_RANGE_MILES`** (or lower **`CHARGE_BUFFER_SOC`** slightly), increase corridor sampling (**`CORRIDOR_SEARCH_RADIUS_MILES`**, **`CORRIDOR_MAX_SAMPLE_POINTS`**, **`CANDIDATE_CHARGERS_CAP`** in **`api/src/planner/corridorCandidates.ts`** / env), ensure **POI Services** returns enough DC-fast sites along the corridor, or **split** the trip with **waypoints** so each segment is shorter.
 
 **Planner stdout (when `PLAN_LOG_REQUESTS` is not `false`):** Corridor sampling logs **`provider_valhalla_polyline`** on success. If Valhalla’s `/route` fails, **`provider_valhalla_polyline_failed`** includes **`durationMs`** (real attempt time) and **`error`**; then **`provider_valhalla_polyline_fallback`** includes **`valhallaAttemptMs`** (same as failed attempt), **`fallbackBuildMs`** (local straight-line sampling only, usually under 1 ms), **`corridorSamplesUsed`**, and **`approxMiles`**. See **`api/src/planner/planTripOneLeg.ts`**.
 
@@ -120,7 +120,7 @@ Tunnel/network layout (Docker `prod-network`, `cloudflared`, etc.): **[docs/CLOU
 
 **Manual quick check (2–3 minutes):**
 1. Start API + web (`3001` / `3000`).
-2. `POST /plan` with `{ "start": "Raleigh, NC", "end": "Greensboro, NC", "includeCandidates": true }` — expect `status: "ok"`, `responseVersion: "v2-1"`, and `candidates.chargers.length >= 1` when NREL returns data.
+2. `POST /plan` with `{ "start": "Raleigh, NC", "end": "Greensboro, NC", "includeCandidates": true }` — expect `status: "ok"`, `responseVersion: "v2-1"`, and `candidates.chargers.length >= 1` when **POI Services** (or your configured corridor source) returns data.
 3. Open `/map`, enable **Show charger candidates**, run **Plan Trip** — green markers should appear for candidates; itinerary markers still render.
 4. **Waypoints:** set start `Raleigh, NC`, waypoint `Charlotte, NC`, end `Atlanta, GA` — expect `status: "ok"` and at least one `waypoint` stop in `stops` when the chain succeeds.
 5. **Locks (Slice 1):** With **no** waypoints, run a plan with `includeCandidates: true`, then `POST` again with `lockedChargersByLeg: [[ "<id from candidates.chargers[0].id>" ]]` — expect `ok` or `INFEASIBLE_CHARGER_LOCK` / `LOCKED_ROUTE_TOO_LONG` (never a bare 500). Unknown ids: `lockedChargersByLeg: [[ "definitely-not-a-real-id" ]]` → `UNKNOWN_CHARGER_LOCK` + HTTP 400.
@@ -218,7 +218,7 @@ These scripts are also listed individually below — they keep critical “plumb
 - Browser-level smoke check that the UI renders the `Itinerary` panel and shows no CORS/preflight console errors:
   - `node scripts/ui-plan-trip-smoke.mjs`
 
-**`Timed out waiting for http://localhost:…/health` in `qa:smoke`:** these scripts **spawn a fresh API** (they do **not** attach to your already-running `dev:api`). Each script uses its own default **`API_PORT`** (e.g. CORS **`3002`**, log contract **`3010`** — see each file’s header). Spawns set **`E2E_SPAWN_PORT`** alongside **`PORT`** so repo **`.env`** `PORT=3001` does not win over **`dotenv` `override: true`** (see **`api/src/server.ts`**). If the child never listens: check **console output** (startup errors, `EADDRINUSE`, missing `NREL_API_KEY`). Free the port or set **`API_PORT`** / **`API_BASE`**. *Note:* piping spawned `stdout` without draining it used to **deadlock** the API on Windows; scripts that don’t parse JSON logs use **inherited** stdio.
+**`Timed out waiting for http://localhost:…/health` in `qa:smoke`:** these scripts **spawn a fresh API** (they do **not** attach to your already-running `dev:api`). Each script uses its own default **`API_PORT`** (e.g. CORS **`3002`**, log contract **`3010`** — see each file’s header). Spawns set **`E2E_SPAWN_PORT`** alongside **`PORT`** so repo **`.env`** `PORT=3001` does not win over **`dotenv` `override: true`** (see **`api/src/server.ts`**). If the child never listens: check **console output** (startup errors, `EADDRINUSE`, missing **`POI_SERVICES_BASE_URL`** / **`VALHALLA_BASE_URL`** as needed). Free the port or set **`API_PORT`** / **`API_BASE`**. *Note:* piping spawned `stdout` without draining it used to **deadlock** the API on Windows; scripts that don’t parse JSON logs use **inherited** stdio.
 
 **Port already in use (`EADDRINUSE`) when E2E spawns the API:** a previous run may have left a `node` process listening on the same `API_PORT`. The scripts [`e2e-cors-functional.mjs`](../scripts/e2e-cors-functional.mjs), [`e2e-plan-log-contract.mjs`](../scripts/e2e-plan-log-contract.mjs), [`e2e-plan-functional.mjs`](../scripts/e2e-plan-functional.mjs) (when `SPAWN_SERVER=true`), [`e2e-replan-smoke.mjs`](../scripts/e2e-replan-smoke.mjs), [`e2e-candidates-smoke.mjs`](../scripts/e2e-candidates-smoke.mjs), [`e2e-route-preview-smoke.mjs`](../scripts/e2e-route-preview-smoke.mjs), and [`e2e-multileg-locks-smoke.mjs`](../scripts/e2e-multileg-locks-smoke.mjs) call [`e2e-kill-port.mjs`](../scripts/e2e-kill-port.mjs) first to **best-effort kill listeners** on that port (default ports **3011–3016** depending on script). If it still fails, manually end the process (Task Manager / `taskkill`, or `Get-NetTCPConnection -LocalPort <port>` on Windows).
 
@@ -356,7 +356,7 @@ Important:
 
 **How waypoints are planned:** `planTripMultiLeg` (`api/src/planner/planTrip.ts`) runs **`planTripOneLegFromCoords` once per driving hop** — e.g. Start→WP1, then WP1→End — and **stops on the first failing leg** (returns that leg’s error; no merged success).
 
-**How that differs from “one route all at once”:** With **no** waypoints, **one** leg covers the **full** origin→destination. The corridor builder (`fetchCorridorChargersForLeg`) walks the **entire** Valhalla polyline (or chord fallback), samples it, unions NREL/mirror hits, then **`CANDIDATE_CHARGERS_CAP`** (default **25**) picks evenly spaced candidates along **progress** for **that** long corridor.
+**How that differs from “one route all at once”:** With **no** waypoints, **one** leg covers the **full** origin→destination. The corridor builder (`fetchCorridorChargersForLeg`) walks the **entire** Valhalla polyline (or chord fallback), samples it, unions **POI Services** corridor hits, then **`CANDIDATE_CHARGERS_CAP`** (default **25**) picks evenly spaced candidates along **progress** for **that** long corridor.
 
 **Why adding a waypoint can flip success→failure:**
 
@@ -377,7 +377,7 @@ Important:
 
 1. **Response JSON** — `debug.multiLeg`, `debug.legCount`, and **`debug.legs`** (array per leg). The **first** `undefined` or error-shaped leg aligns with the failing hop.
 2. **API message** — e.g. `"No EV charging stops for the trip"` (corridor empty), **No feasible itinerary** (solver), geocode/Valhalla errors.
-3. **Tune / env** — `CANDIDATE_CHARGERS_CAP`, `NREL_RADIUS_MILES`, `CORRIDOR_STEP_MILES`, `CORRIDOR_MAX_SAMPLE_POINTS`, Valhalla up (`VALHALLA_BASE_URL`), and mirror vs remote NREL (`SOURCE_ROUTING_MODE`).
+3. **Tune / env** — `CANDIDATE_CHARGERS_CAP`, `CORRIDOR_SEARCH_RADIUS_MILES` (or legacy `NREL_RADIUS_MILES`), `CORRIDOR_STEP_MILES`, `CORRIDOR_MAX_SAMPLE_POINTS`, Valhalla up (`VALHALLA_BASE_URL`), **`POI_SERVICES_BASE_URL`**.
 
 **Docs:** Corridor + cap + solver behavior — **`api/src/planner/corridorCandidates.ts`**, **`planTripOneLeg.ts`**, **`leastTimeSegment.ts`**.
 
@@ -385,7 +385,7 @@ Important:
 
 ## 6) Notes on flakiness
 
-- NREL/Overpass requests can return empty sets or time out.
+- **POI Services** requests can return empty sets or time out (depending on configuration and network).
 - The planner should **fail gracefully**:
   - `/plan` returns `status: "error"` with a useful `message`
   - `debug` remains present when available

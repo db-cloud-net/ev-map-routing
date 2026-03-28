@@ -17,6 +17,7 @@
 import { execSync, spawn } from "node:child_process";
 import process from "node:process";
 import { killListenersOnPort } from "./e2e-kill-port.mjs";
+import { startPoiCorridorMock } from "./e2e-poi-corridor-mock.mjs";
 
 const API_PORT = Number(process.env.API_PORT ?? "3001");
 const API_BASE = process.env.API_BASE ?? `http://localhost:${API_PORT}`;
@@ -167,6 +168,11 @@ async function main() {
   };
   const spawnServer = (process.env.SPAWN_SERVER ?? "false").toLowerCase() === "true";
   let serverProc = null;
+  let poiMock = null;
+  if (spawnServer) {
+    poiMock = await startPoiCorridorMock();
+    baseEnv.POI_SERVICES_BASE_URL = poiMock.baseUrl;
+  }
   if (!spawnServer) await waitForHealth();
 
   // Test cases use real external services.
@@ -186,8 +192,7 @@ async function main() {
         OVERNIGHT_HOTEL_RADIUS_METERS: "1200",
         NREL_RADIUS_MILES: "60",
         CORRIDOR_MAX_SAMPLE_POINTS: "10",
-        CANDIDATE_CHARGERS_CAP: "200",
-        NREL_INCLUDE_ALL_ELECTRIC_CHARGERS: "true"
+        CANDIDATE_CHARGERS_CAP: "200"
       },
       timeoutMs: 240000,
       assertions: (json) => {
@@ -294,6 +299,7 @@ async function main() {
   }
 
   stopServer(serverProc);
+  if (poiMock) await poiMock.close();
 
   const failed = results.filter((r) => r.status === "failed");
   if (failed.length) {

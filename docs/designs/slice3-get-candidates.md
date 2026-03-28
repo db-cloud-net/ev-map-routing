@@ -1,5 +1,7 @@
 # Slice 3 — dedicated candidates endpoint (design spike)
 
+> **Planner corridor source:** **`POST /candidates`** uses the same corridor pool as **`POST /plan`** — **POI Services** when **`POI_SERVICES_BASE_URL`** is set (not live NREL in Travel-Routing for that path).
+
 **Status:** **Implemented** — `POST /candidates` on the API; see **[../V2_API.md](../V2_API.md)** § Slice 3.  
 **Normative contract:** **[../V2_API.md](../V2_API.md)** (Slice 3 section).  
 **Product context:** **[PRD.md](../../PRD.md)** § Version 2 · Slice 3; **[ROUTING_UX_SPEC.md](../ROUTING_UX_SPEC.md)** §3 (~60s first screen) and progressive delivery.
@@ -38,10 +40,10 @@ For **progressive UX** (rough route + map context early, refinements later), we 
 
 1. **Geocode / replan resolve** — Same entry path as `planTrip` (reuse shared helpers: geocode strings, `replanFrom` + `previousStops` resolution).
 2. **Corridor geometry** — Valhalla route polyline per leg (or shared polyline builder used today).
-3. **NREL + Overpass sampling** — Same corridor charger + optional hotel preview logic as **`planTripOneLeg`** candidate construction (**not** the full least-time overnight / charge graph).
+3. **Corridor POI sampling** — Same corridor charger + optional hotel preview logic as **`planTripOneLeg`** candidate construction (**POI Services** when configured; legacy NREL/Overpass otherwise) (**not** the full least-time overnight / charge graph).
 4. **Return** `candidates` (and **no** `stops` / `legs` / `totals`), or `status: "error"` with `errorCode` where applicable.
 
-**Performance:** Still **Valhalla + NREL (+ Overpass if hotels)** — not “free.” The win is **skipping** the expensive **energy / least-time / overnight** solver when we only need pins.
+**Performance:** Still **Valhalla + corridor provider** (POI Services and/or legacy NREL/Overpass) — not “free.” The win is **skipping** the expensive **energy / least-time / overnight** solver when we only need pins.
 
 **Refactor:** Extract a **`fetchCorridorCandidates(...)`** (name TBD) from **`planTripOneLeg.ts`** so `/plan` and **`POST /candidates`** share one code path for **id-stable** `CandidateCharger` / `CandidateHotel` lists.
 

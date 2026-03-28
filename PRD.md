@@ -1,12 +1,14 @@
 # PRD: EV Trip Planning QA-Driven Requirements
 
+> **Planner corridor source:** With **`POI_SERVICES_BASE_URL`** set, **POI Services** is the runtime source for corridor DC-fast chargers, hotels, and related POI layers. Travel-Routing does **not** use live NREL for `/plan` in that configuration. Env vars named **`NREL_*`** below include **offline mirror refresh** and legacy paths.
+
 **System map (implementation + ops):** see **[docs/V1_SYSTEM.md](docs/V1_SYSTEM.md)** and **[docs/README.md](docs/README.md)** for a minimal reconstruction path alongside this PRD.
 
 ## Overview
 This document converts the existing QA “known invariants” in `TESTING.md` into a starter PRD. The goal is to make the expected behavior of the trip-planning feature explicit and repeatable.
 
 ## Problem Statement
-The trip planner integrates multiple external services (NREL, Overpass, Valhalla), which can be slow or flaky. Because exact itineraries are not stable, the product needs verification via invariant-based checks that confirm important behaviors (e.g., overnight + hotel insertion) without asserting precise routes.
+The trip planner integrates multiple external services (**POI Services** for corridor data when configured, **Valhalla**, geocode, and optionally legacy NREL/Overpass or mirror tiers), which can be slow or flaky. Because exact itineraries are not stable, the product needs verification via invariant-based checks that confirm important behaviors (e.g., overnight + hotel insertion) without asserting precise routes.
 
 ## Goals
 1. Produce a valid trip plan from a `start` and `end` pair.
@@ -59,10 +61,13 @@ These environment variables control the planner’s invariant-based behavior and
 - `AVG_SPEED_MPH=60`
   - Requirement linkage: affects ETA/time modeling used to determine whether the overnight threshold is crossed.
 
-### NREL corridor charger discovery (what chargers become candidates)
-- `NREL_API_KEY=<set in .env>`
-  - Requirement linkage: required for NREL charger queries (affects whether at least one `charge` stop can appear).
-- `NREL_RADIUS_MILES=60`
+### POI Services corridor (runtime — primary product path)
+- `POI_SERVICES_BASE_URL` — base URL for **`POST /corridor/query`** (corridor DC-fast chargers, hotels, optional pairs/edges).
+  - Requirement linkage: when set, corridor candidate pools for planning come from **POI Services**, not live NREL in Travel-Routing.
+- `USE_POI_SERVICES_CORRIDOR`, `POI_SERVICES_USE_PAIRS`, `POI_SERVICES_USE_EDGES`, `POI_SERVICES_FALLBACK_TO_NREL`, `POI_SERVICES_TIMEOUT_MS` — see **`.env.example`** and **`TESTING.md`**.
+
+### Corridor sampling geometry & caps (shared)
+- `NREL_RADIUS_MILES=60` *(name retained; also informs corridor radius behavior alongside POI filters)*
   - Requirement linkage: radius around corridor samples when querying chargers/hotspots.
 - `CORRIDOR_STEP_MILES=30`
   - Requirement linkage: spacing between corridor sample points for charger lookup.
@@ -71,9 +76,13 @@ These environment variables control the planner’s invariant-based behavior and
 - `CANDIDATE_CHARGERS_CAP=200`
   - Requirement linkage: caps total charger candidates used for planning.
 - `NREL_INCLUDE_ALL_ELECTRIC_CHARGERS=true`
-  - Requirement linkage: broadens the candidate charger set beyond “fast DC” when true.
+  - Requirement linkage: broadens the candidate charger set beyond “fast DC” when true (legacy NREL/mirror paths).
 - `USE_NREL_NEARBY_ROUTE=false`
   - Requirement linkage: controls whether the corridor is sampled via route polyline vs straight/approx sampling.
+
+### NREL HTTP / mirror refresh (not the POI-only `/plan` path)
+- `NREL_API_KEY=<set in .env>`
+  - Requirement linkage: required for **mirror refresh** and **legacy `remote_only`** charger queries — not for routine POI-backed planning.
 
 ### Valhalla leg modeling / feasibility (external integration tuning)
 - `VALHALLA_BASE_URL` — e.g. `http://<nas-lan-ip>:8002` or `http://localhost:8002` (see **[docs/VALHALLA.md](docs/VALHALLA.md)**; default port is **8002**)
@@ -87,9 +96,9 @@ These environment variables control the planner’s invariant-based behavior and
 - `OVERPASS_BASE_URL` (optional; default is `https://overpass-api.de/api/interpreter`)
   - Requirement linkage: controls the Overpass service used to find “Holiday Inn Express” hotels.
 
-### NREL resiliency / rate limiting
+### NREL resiliency / rate limiting (legacy NREL HTTP client / refresh)
 - `NREL_MAX_ATTEMPTS=3`
-  - Requirement linkage: affects retries for flaky NREL calls (important for “fail gracefully” and invariant stability).
+  - Requirement linkage: affects retries for flaky NREL calls when that client is used (mirror refresh or legacy routing).
 - `NREL_INTER_REQUEST_DELAY_MS=250`
   - Requirement linkage: spacing between outbound NREL requests.
 - `NREL_RETRY_BASE_DELAY_MS=500`
@@ -268,7 +277,7 @@ Waypoint **reordering** to minimize total time is **product direction** in **[do
 ### V2 configuration (environment)
 | Variable | Purpose |
 |----------|---------|
-| `V2_MAX_WAYPOINTS` | Max intermediate waypoints (default `8`). |
+| `V2_MAX_WAYPOINTS` | Max intermediate waypoints (default `12`). |
 | `V2_HOTEL_MAP_PREVIEW` | When not `false`, hotel candidate pins may query Overpass near a corridor sample (default enabled). |
 
 ### V2 verification

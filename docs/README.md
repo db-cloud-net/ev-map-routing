@@ -4,8 +4,11 @@ Start here for **v2** or onboarding. Longer specs are linked, not duplicated.
 
 **Doc precedence:** On **routing behavior** or **progressive UX**, **[ROUTING_UX_SPEC.md](./ROUTING_UX_SPEC.md)** **supersedes** **[PRD.md](../PRD.md)** when they conflict. **PRD.md** stays authoritative for QA invariants, env knobs, and **V2_API** pointers unless the routing spec says otherwise.
 
+**Corridor data:** With **`POI_SERVICES_BASE_URL`** set, **POI Services** is the **runtime** source for corridor DC-fast chargers, hotels, and related layers on **`/plan`** / **`/candidates`**. Docs that discuss **NREL** or the **local mirror** may describe **offline refresh** or **legacy** paths — see **[ROUTING_UX_SPEC.md](./ROUTING_UX_SPEC.md)** §2.
+
 | Document | Purpose |
 |----------|---------|
+| **[DEPRECATED_MIRROR_STACK.md](./DEPRECATED_MIRROR_STACK.md)** | **Do not use** removed mirror Docker / NREL mirror stack; git history vs current `main`. |
 | **[V1_SYSTEM.md](./V1_SYSTEM.md)** | **Minimal reconstruction guide** — what was built, how it fits together, how to run and validate it. |
 | [`../PRD.md`](../PRD.md) | Product requirements and QA-linked env knobs (overnight/hotel/charging invariants). |
 | [`V2_API.md`](./V2_API.md) | **v2** `POST /plan` additive fields (`waypoints`, `includeCandidates`, `candidates`, **locks**); **Slice 3** `POST /candidates` (shipped). |
@@ -21,7 +24,7 @@ Start here for **v2** or onboarding. Longer specs are linked, not duplicated.
 | [`../TODOS.md`](../TODOS.md) | Phase checklist and backlog (living; optional for pure reconstruction). |
 | [`local-mirror-architecture.md`](./local-mirror-architecture.md) | Full local mirror design (contracts, router modes, B1–D3). |
 | [`LOCAL_MIRROR_CHECKPOINT.md`](./LOCAL_MIRROR_CHECKPOINT.md) | Epic status snapshot (living). |
-| [`d1-runbook.md`](./d1-runbook.md) | Docker mirror + planner verification. |
+| [`d1-runbook.md`](./d1-runbook.md) | Deploy notes: POI + planner on Docker networks (mirror compose **removed**). |
 | [`CI_SCOPE.md`](./CI_SCOPE.md) | Proposed CI gates + SLO log stub. |
 | [`CLOUDFLARE.md`](./CLOUDFLARE.md) | Production **Cloudflare Tunnel** vs `planner-api`, CORS, secrets (no tokens in git). |
 

@@ -12,6 +12,7 @@
 import { execSync, spawn } from "node:child_process";
 import process from "node:process";
 import { killListenersOnPort } from "./e2e-kill-port.mjs";
+import { startPoiCorridorMock } from "./e2e-poi-corridor-mock.mjs";
 
 const API_PORT = Number(process.env.API_PORT ?? "3013");
 const API_BASE = process.env.API_BASE ?? `http://localhost:${API_PORT}`;
@@ -38,7 +39,7 @@ async function waitForHealth({ timeoutMs = 60000 } = {}) {
   throw new Error(`Timed out waiting for ${API_BASE}/health`);
 }
 
-function startServer() {
+function startServer(poiBaseUrl) {
   killListenersOnPort(API_PORT, { verbose: process.env.E2E_VERBOSE === "1" });
   execSync("npm -w api run build", { stdio: "inherit" });
 
@@ -50,7 +51,7 @@ function startServer() {
       PORT: String(API_PORT),
       E2E_SPAWN_PORT: String(API_PORT),
       DEPLOYMENT_ENV: "dev-local",
-      SOURCE_ROUTING_MODE: "remote_only",
+      POI_SERVICES_BASE_URL: poiBaseUrl,
       PLAN_LOG_REQUESTS: "false"
     },
     stdio: ["ignore", "inherit", "inherit"]
@@ -78,9 +79,11 @@ async function postPlan(body) {
 }
 
 async function main() {
-  const proc = startServer();
+  const poiMock = await startPoiCorridorMock();
   try {
-    await waitForHealth({ timeoutMs: 60000 });
+    const proc = startServer(poiMock.baseUrl);
+    try {
+      await waitForHealth({ timeoutMs: 60000 });
 
     const base = await postPlan({
       start: "Raleigh, NC",
@@ -145,13 +148,16 @@ async function main() {
       `expected UNKNOWN_REPLAN_STOP, got ${unknownStop.json.errorCode}`
     );
 
-    console.log("e2e-replan-smoke: ok");
-  } finally {
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      // ignore
+      console.log("e2e-replan-smoke: ok");
+    } finally {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
     }
+  } finally {
+    await poiMock.close();
   }
 }
 

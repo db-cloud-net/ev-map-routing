@@ -1,8 +1,16 @@
 node_modules
 .env
-.cursor
+# Cursor IDE — ignore local editor state; keep plan stubs under .cursor/plans/ versioned
+.cursor/*
+!.cursor/plans/
+.cursor/plans/*
+!.cursor/plans/*.md
 .gstack/
 web/.next/
+# Local Next.js overrides (secrets); use .env.example at repo root for docs
+web/.env.local
+# TypeScript incremental build cache
+*.tsbuildinfo
 api/dist/
 # Local mirror refresh output (keep manifests/runbooks in docs; avoid large NDJSON in git)
 api/mirror/snapshots/
@@ -10,3 +18,5 @@ api/mirror/snapshots/
 api/mirror/**/refresh.lock
 .vscode/
 .tmp-screenshot2/
+logs/
+logs/*.ndjson
