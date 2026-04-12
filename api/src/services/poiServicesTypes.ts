@@ -27,6 +27,8 @@ export type PoiServicesCorridorRequest = {
     /** Max hotel↔DCFC distance for `pairs` layer (yards). */
     pairs_max_distance_yd?: number;
   };
+  /** Optional output cap; POI Services may apply it per-layer or to the overall query. */
+  limit?: number;
 };
 
 /** One row from POI Services `pairs` layer (corridor or `/pois/hotel-charger-pairs`). */

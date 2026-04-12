@@ -24,6 +24,8 @@
 
 **POI Services v2 (data plane) — shipped (2026-03-24):** POI shipped with corridor query + fail-closed; **`lockedHotelId`** supports **`poi_services:hotel:*`**; overnight sleep meta uses hotel **`nearby_dcfc_*`** and POI **`pairs`** / corridor join (optional legacy NREL path in code for dev only) + optional **`POI_REVIEW_LOG`** NDJSON for data QA.
 
+**Planned feature:** `docs/designs/poi-route-overlay.md` — POI Select route corridor UX, selected POI waypoint selection, and replan integration.
+
 ### Immediate next steps (pick one)
 
 1. **§4 refinement loops** — **Shipped:** segment-hop **`partial_route`** checkpoints · **`optimizeWaypointOrder`** + haversine proxy reorder (**`PLAN_WAYPOINT_REORDER_BUDGET_MS`**) · map **Progressive refinement** copy + segment-hop count + waypoint-order banner · **[`V2_API.md`](docs/V2_API.md)** / **`WEB_SWITCHES.md`**. **Later:** map **`rangeLegs`** road geometry · **Pillar 1** optimizer **[§ handoff](docs/designs/range-leg-incremental-trust-adr.md#pillar-1-v1-handoff-paused)** when prioritized.

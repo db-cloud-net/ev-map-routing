@@ -10,7 +10,7 @@ This document describes **additive** fields on `POST /plan`. Omitting them prese
 |-------|------|----------|-------------|
 | `start` | string | yes† | Start place text (geocoded). **Omitted** when `replanFrom` is set (Slice 2). |
 | `end` | string | yes | End place text (geocoded). |
-| `waypoints` | string[] | no | Ordered intermediate destinations (each geocoded). Empty/omitted = single leg (v1). With **Slice 2**, only **remaining** waypoints after the new start. |
+| `waypoints` | string[] | no | Ordered intermediate destinations (each geocoded). Empty/omitted = single leg (v1). With **Slice 2**, only **remaining** waypoints after the new start. Selected corridor POIs from the UI may be represented as ordered waypoints in this field. |
 | `includeCandidates` | boolean | no | When `true`, successful **`ok`** responses may include `candidates` for map layers. |
 | `lockedChargersByLeg` | string[][] | no | **Slice 1:** One array per **driving leg** (length = `max(1, waypoints.length + 1)`). Each inner array is an **ordered** list of charger **ids** that must be visited on that leg (hard constraint). Ids must exist in the current corridor’s candidate set (same universe as `candidates.chargers`). |
 | `lockedHotelId` | string | no | **Slice 1:** Priority hotel candidate for overnight insertion — searched first using the same rules as other hotels (not a strict hard lock). Accepts **Overpass** ids from `candidates.hotels`, or **`poi_services:hotel:<numeric>`** when corridor hotels are POI-sourced. |

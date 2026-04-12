@@ -15,6 +15,7 @@
 | **[docs/WEB_SWITCHES.md](./docs/WEB_SWITCHES.md)** | Map app **`NEXT_PUBLIC_*`** switches (`web/.env.local`). |
 | **[docs/VALHALLA.md](./docs/VALHALLA.md)** | Valhalla **`VALHALLA_BASE_URL`** (port **8002**, NAS vs Docker). |
 | **[docs/MAP_AND_NAV.md](./docs/MAP_AND_NAV.md)** | Map line vs highways; turn-by-turn limits; path to road geometry. |
+| **[docs/designs/poi-route-overlay.md](./docs/designs/poi-route-overlay.md)** | Planned POI Select overlay UX, corridor POI filters, selected POI waypoints, and replan integration. |
 | **[docs/ROUTING_UX_SPEC.md](./docs/ROUTING_UX_SPEC.md)** | **Routing/UX spec** — objectives, ~60s first screen, progressive refinements, mirror + fail closed. |
 | **[docs/CLOUDFLARE.md](./docs/CLOUDFLARE.md)** | Public HTTPS via Cloudflare Tunnel + CORS (production). |
 

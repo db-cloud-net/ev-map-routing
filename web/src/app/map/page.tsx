@@ -80,6 +80,21 @@ function sleepStopMarkerElement(hasChargerNearby: boolean): HTMLDivElement {
   return root;
 }
 
+function poiCandidateMarkerElement(selected: boolean, color: string): HTMLDivElement {
+  const root = document.createElement("div");
+  root.style.display = "flex";
+  root.style.alignItems = "center";
+  root.style.justifyContent = "center";
+  root.style.width = "18px";
+  root.style.height = "18px";
+  root.style.borderRadius = "50%";
+  root.style.background = color;
+  root.style.border = selected ? "2px solid #111" : "2px solid rgba(255,255,255,0.9)";
+  root.style.boxShadow = selected ? "0 0 0 2px rgba(0,0,0,0.15)" : "0 0 0 1px rgba(0,0,0,0.15)";
+  root.style.cursor = "pointer";
+  return root;
+}
+
 function toNumberOrNull(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string") {
@@ -571,6 +586,7 @@ export default function MapPage() {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const candidateMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const poiMarkersRef = useRef<maplibregl.Marker[]>([]);
   const autoFitConsumedRef = useRef(false);
   const [mapReady, setMapReady] = useState(false);
 
@@ -582,6 +598,8 @@ export default function MapPage() {
     markersRef.current = [];
     for (const m of candidateMarkersRef.current) m.remove();
     candidateMarkersRef.current = [];
+    for (const m of poiMarkersRef.current) m.remove();
+    poiMarkersRef.current = [];
     for (const lid of [
       "route-line",
       "route-line-halo",
@@ -590,7 +608,8 @@ export default function MapPage() {
       "stops-fallback-circle",
       "stops-fallback-sleep",
       "candidates-fallback-chargers",
-      "candidates-fallback-hotels"
+      "candidates-fallback-hotels",
+      "poi-candidates-fallback"
     ]) {
       if (map.getLayer(lid)) map.removeLayer(lid);
     }
@@ -598,6 +617,7 @@ export default function MapPage() {
     if (map.getSource("route-preview-geojson")) map.removeSource("route-preview-geojson");
     if (map.getSource("stops-fallback-geojson")) map.removeSource("stops-fallback-geojson");
     if (map.getSource("candidates-fallback-geojson")) map.removeSource("candidates-fallback-geojson");
+    if (map.getSource("poi-candidates-fallback-geojson")) map.removeSource("poi-candidates-fallback-geojson");
   }
 
   const [start, setStart] = useState("Raleigh, NC");
@@ -621,8 +641,8 @@ export default function MapPage() {
     () =>
       Boolean(
         plan &&
-          plan.status === "ok" &&
-          (plan.debug as Record<string, unknown> | undefined)?.planJobPartialRoute === true
+        plan.status === "ok" &&
+        (plan.debug as Record<string, unknown> | undefined)?.planJobPartialRoute === true
       ),
     [plan]
   );
@@ -648,6 +668,29 @@ export default function MapPage() {
   /** Per-leg ordered charger locks (Slice 1 UI: single-leg trips only; multi-leg rows stay empty). */
   const [lockedChargersByLeg, setLockedChargersByLeg] = useState<string[][]>([[]]);
   const [lockedHotelId, setLockedHotelId] = useState<string | null>(null);
+  type PoiSelectMode = "off" | "all" | "charger" | "accommodation";
+  type CorridorPoi = {
+    id: string;
+    poi_type: "accommodation" | "charger";
+    name: string;
+    lat: number;
+    lon: number;
+    address?: string;
+    city?: string;
+    state?: string;
+    zip_code?: string;
+    network?: string;
+    distance_from_route_mi?: number;
+    attributes: Record<string, string | number | boolean | undefined>;
+  };
+  const [poiMode, setPoiMode] = useState<PoiSelectMode>("off");
+  const [poiNetwork, setPoiNetwork] = useState("");
+  const [poiRadiusMi, setPoiRadiusMi] = useState("25");
+  const [poiLimit, setPoiLimit] = useState("120");
+  const [poiCandidates, setPoiCandidates] = useState<CorridorPoi[] | null>(null);
+  const [poiSelection, setPoiSelection] = useState<Record<string, boolean>>({});
+  const [poiFetching, setPoiFetching] = useState(false);
+  const [poiError, setPoiError] = useState<string | null>(null);
   /** Slice 2: mid-journey replan — omit `start`, use coords or a stop from the last plan. */
   const [replanMode, setReplanMode] = useState<"off" | "coords" | "stopId">("off");
   const [replanLat, setReplanLat] = useState("35.7796");
@@ -915,9 +958,9 @@ export default function MapPage() {
 
     const rangeLegFc =
       mapDebugRangeLegs() &&
-      plan.status === "ok" &&
-      plan.rangeLegs &&
-      plan.rangeLegs.length > 0
+        plan.status === "ok" &&
+        plan.rangeLegs &&
+        plan.rangeLegs.length > 0
         ? buildRangeLegRouteFeatureCollection(plan, routeCoords, plan.rangeLegs)
         : null;
 
@@ -1047,6 +1090,15 @@ export default function MapPage() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    if (poiMode !== "off") {
+      for (const m of markersRef.current) m.remove();
+      markersRef.current = [];
+      for (const lid of ["stops-fallback-circle", "stops-fallback-sleep"]) {
+        if (map.getLayer(lid)) map.removeLayer(lid);
+      }
+      if (map.getSource("stops-fallback-geojson")) map.removeSource("stops-fallback-geojson");
+      return;
+    }
     for (const lid of ["stops-fallback-circle", "stops-fallback-sleep"]) {
       if (map.getLayer(lid)) map.removeLayer(lid);
     }
@@ -1206,7 +1258,7 @@ export default function MapPage() {
         "text-halo-width": 1.1
       }
     });
-  }, [plan, mapReady]);
+  }, [plan, mapReady, poiMode]);
 
   /** Slice 4: draw approximate road line from `POST /route-preview` until a successful plan replaces it. */
   useEffect(() => {
@@ -1314,7 +1366,7 @@ export default function MapPage() {
     if (map.getSource("candidates-fallback-geojson")) map.removeSource("candidates-fallback-geojson");
     for (const m of candidateMarkersRef.current) m.remove();
     candidateMarkersRef.current = [];
-    if (!candidatesForMap) return;
+    if (!candidatesForMap || poiMode !== "off") return;
 
     if (showChargerCandidates) {
       for (const c of candidatesForMap.chargers) {
@@ -1386,52 +1438,52 @@ export default function MapPage() {
 
     const chargerFeatures = showChargerCandidates
       ? candidatesForMap.chargers
-          .filter((c) => hasFiniteCoords(c.coords))
-          .map((c) => {
-            const locked = singleLegTrip && lockedChargersByLeg[0]?.includes(c.id);
-            const l2 = isLikelyL2Power(toNumberOrNull(c.maxPowerKw));
-            const color = locked
-              ? l2
-                ? "#4aa39f"
-                : "#225a56"
-              : l2
-                ? COLORS.l2Teal
-                : COLORS.dcfcTeal;
-            return {
-              type: "Feature" as const,
-              properties: { kind: "charger", color },
-              geometry: {
-                type: "Point" as const,
-                coordinates: [Number(c.coords.lon), Number(c.coords.lat)] as [number, number]
-              }
-            };
-          })
+        .filter((c) => hasFiniteCoords(c.coords))
+        .map((c) => {
+          const locked = singleLegTrip && lockedChargersByLeg[0]?.includes(c.id);
+          const l2 = isLikelyL2Power(toNumberOrNull(c.maxPowerKw));
+          const color = locked
+            ? l2
+              ? "#4aa39f"
+              : "#225a56"
+            : l2
+              ? COLORS.l2Teal
+              : COLORS.dcfcTeal;
+          return {
+            type: "Feature" as const,
+            properties: { kind: "charger", color },
+            geometry: {
+              type: "Point" as const,
+              coordinates: [Number(c.coords.lon), Number(c.coords.lat)] as [number, number]
+            }
+          };
+        })
       : [];
 
     const hotelFeatures = showHotelCandidates
       ? candidatesForMap.hotels
-          .filter((h) => hasFiniteCoords(h.coords))
-          .map((h) => {
-            const sel = singleLegTrip && lockedHotelId === h.id;
-            const hasNearbyCharger = candidatesForMap.chargers.some(
-              (c) => hasFiniteCoords(c.coords) && haversineMiles(h.coords, c.coords) <= 400 / 1760
-            );
-            const color = sel
-              ? hasNearbyCharger
-                ? "#8a3d16"
-                : "#cf711f"
-              : hasNearbyCharger
-                ? COLORS.hotelDarkOrange
-                : COLORS.hotelLightOrange;
-            return {
-              type: "Feature" as const,
-              properties: { kind: "hotel", color },
-              geometry: {
-                type: "Point" as const,
-                coordinates: [Number(h.coords.lon), Number(h.coords.lat)] as [number, number]
-              }
-            };
-          })
+        .filter((h) => hasFiniteCoords(h.coords))
+        .map((h) => {
+          const sel = singleLegTrip && lockedHotelId === h.id;
+          const hasNearbyCharger = candidatesForMap.chargers.some(
+            (c) => hasFiniteCoords(c.coords) && haversineMiles(h.coords, c.coords) <= 400 / 1760
+          );
+          const color = sel
+            ? hasNearbyCharger
+              ? "#8a3d16"
+              : "#cf711f"
+            : hasNearbyCharger
+              ? COLORS.hotelDarkOrange
+              : COLORS.hotelLightOrange;
+          return {
+            type: "Feature" as const,
+            properties: { kind: "hotel", color },
+            geometry: {
+              type: "Point" as const,
+              coordinates: [Number(h.coords.lon), Number(h.coords.lat)] as [number, number]
+            }
+          };
+        })
       : [];
 
     const candidateFeatures = [...chargerFeatures, ...hotelFeatures];
@@ -1475,8 +1527,49 @@ export default function MapPage() {
     singleLegTrip,
     lockedChargersByLeg,
     lockedHotelId,
-    mapReady
+    mapReady,
+    poiCandidates,
+    poiSelection,
+    poiMode
   ]);
+
+  // Clear POI candidate state when the mode changes so stale selections from a
+  // prior mode can't silently leak into subsequent plan submissions.
+  useEffect(() => {
+    setPoiCandidates(null);
+    setPoiSelection({});
+    setPoiError(null);
+  }, [poiMode]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const lid of ["poi-candidates-fallback"] as const) {
+      if (map.getLayer(lid)) map.removeLayer(lid);
+    }
+    if (map.getSource("poi-candidates-fallback-geojson")) map.removeSource("poi-candidates-fallback-geojson");
+    for (const m of poiMarkersRef.current) m.remove();
+    poiMarkersRef.current = [];
+    if (!poiCandidates || !poiCandidates.length || poiMode === "off") return;
+
+    for (const poi of poiCandidates) {
+      const color = poi.poi_type === "charger" ? COLORS.dcfcTeal : COLORS.hotelLightOrange;
+      const selected = Boolean(poiSelection[poi.id]);
+      const marker = new maplibregl.Marker({ element: poiCandidateMarkerElement(selected, color) })
+        .setLngLat([poi.lon, poi.lat])
+        .addTo(map);
+      const el = marker.getElement();
+      el.style.zIndex = "2";
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        setPoiSelection((cur) => ({
+          ...cur,
+          [poi.id]: !cur[poi.id]
+        }));
+      });
+      poiMarkersRef.current.push(marker);
+    }
+  }, [mapReady, poiCandidates, poiSelection, poiMode]);
 
   function humanizePlannerMessage(msg: string): string {
     if (/Planner exceeded time limit \(\d+ms\)/i.test(msg)) {
@@ -1509,6 +1602,86 @@ export default function MapPage() {
     }
     const raw = e instanceof Error ? e.message : "Planning failed";
     return humanizePlannerMessage(raw);
+  }
+
+  async function getRoutePreviewShape(): Promise<Array<{ lat: number; lon: number }>> {
+    const coords = routePreview?.preview?.polyline?.coordinates;
+    if (routePreview?.status === "ok" && coords?.length && coords.length >= 2) {
+      return coords.map(([lon, lat]) => ({ lat, lon }));
+    }
+
+    if (replanMode !== "off" || parsedWaypoints.length > 0) {
+      throw new Error("POI Select is only available for single-leg start/end trips.");
+    }
+
+    const previewChain = routePreviewSegmentChain(start, [], end);
+    const preview = await fetchMergedRoutePreview(
+      apiBase,
+      previewChain,
+      abortSignalAfterMs(routePreviewClientTimeoutMs())
+    );
+    if (!preview || preview.status !== "ok" || !preview.preview?.polyline?.coordinates?.length) {
+      throw new Error("Unable to fetch a route preview for the current corridor.");
+    }
+    setRoutePreview(preview);
+    return preview.preview.polyline.coordinates.map(([lon, lat]) => ({ lat, lon }));
+  }
+
+  async function onFetchPoiCandidates() {
+    setPoiError(null);
+    setPoiCandidates(null);
+    setPoiSelection({});
+    if (!poiMode || poiMode === "off") {
+      setPoiError("Select a POI mode before fetching corridor POIs.");
+      return;
+    }
+    if (replanMode !== "off" || parsedWaypoints.length > 0) {
+      setPoiError("POI Select only supports single-leg start/end trips for now.");
+      return;
+    }
+
+    const radius = Number(poiRadiusMi);
+    const limit = Number(poiLimit);
+    if (!Number.isFinite(radius) || radius <= 0) {
+      setPoiError("Enter a valid corridor radius in miles.");
+      return;
+    }
+    if (!Number.isFinite(limit) || limit <= 0) {
+      setPoiError("Enter a valid POI result limit.");
+      return;
+    }
+
+    setPoiFetching(true);
+    try {
+      const shape = await getRoutePreviewShape();
+      const body: Record<string, unknown> = {
+        shape,
+        corridor_radius_mi: radius,
+        poi_type: poiMode,
+        limit
+      };
+      if (poiMode === "charger" && poiNetwork.trim()) {
+        body.network = poiNetwork.trim();
+      }
+      const url = `${apiBase.replace(/\/$/, "")}/corridor/pois`;
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const json = (await resp.json().catch(() => null)) as
+        | { status: "ok"; pois: CorridorPoi[] }
+        | { status?: string; message?: string };
+      if (!resp.ok || json.status !== "ok" || !Array.isArray((json as any).pois)) {
+        setPoiError((json as { message?: string }).message ?? "Failed to fetch corridor POIs.");
+        return;
+      }
+      setPoiCandidates((json as { pois: CorridorPoi[] }).pois);
+    } catch (err) {
+      setPoiError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPoiFetching(false);
+    }
   }
 
   async function onPlanTrip() {
@@ -1548,24 +1721,47 @@ export default function MapPage() {
       const candidatesUrl = `${apiBase.replace(/\/$/, "")}/candidates`;
       const wps = parsedWaypoints;
       const locks = lockedChargersByLeg.slice(0, legCount).map((r) => [...r]);
-      const hasLocks = locks.some((r) => r.length > 0);
+      const hasLocks = poiMode === "off" && locks.some((r) => r.length > 0);
+      let allWaypoints = wps;
       const body: Record<string, unknown> = {
         end,
         includeCandidates: true,
         ...(wps.length ? { waypoints: wps } : {}),
         ...(hasLocks ? { lockedChargersByLeg: locks } : {}),
-        ...(lockedHotelId ? { lockedHotelId } : {}),
+        ...(lockedHotelId && poiMode === "off" ? { lockedHotelId } : {}),
         ...(wps.length >= 2 &&
-        !hasLocks &&
-        replanMode === "off" &&
-        optimizeWaypointOrder
+          !hasLocks &&
+          replanMode === "off" &&
+          optimizeWaypointOrder
           ? { optimizeWaypointOrder: true }
           : {})
       };
 
+      if (poiCandidates && Object.values(poiSelection).some(Boolean) && singleLegTrip && replanMode === "off") {
+        const selectedPois = poiCandidates.filter((poi) => poiSelection[poi.id]);
+        const selectedHotels = selectedPois
+          .filter((poi) => poi.poi_type === "accommodation")
+          .map((poi) => poi.id);
+
+        // Add selected charger POI coordinates as waypoints (hotels go via lockedHotelId, not waypoints)
+        const poiWaypoints = selectedPois
+          .filter((poi) => poi.poi_type !== "accommodation" && Number.isFinite(poi.lat) && Number.isFinite(poi.lon))
+          .map((poi) => `${poi.lat},${poi.lon}`);
+        allWaypoints = [...wps, ...poiWaypoints];
+
+        // Note: When POIs are selected as waypoints, we don't need to lock them
+        // since they're already waypoints in the route
+        if (selectedHotels.length > 0) {
+          body.lockedHotelId = selectedHotels[0];
+        }
+        if (allWaypoints.length > 0) {
+          body.waypoints = allWaypoints;
+        }
+      }
+
       const candidatesBody: Record<string, unknown> = {
         end,
-        ...(wps.length ? { waypoints: wps } : {})
+        ...(allWaypoints?.length ? { waypoints: allWaypoints } : wps.length ? { waypoints: wps } : {})
       };
 
       if (replanMode === "coords") {
@@ -1624,10 +1820,10 @@ export default function MapPage() {
       const routePreviewPromise: Promise<RoutePreviewApiResponse | null> =
         shouldPrefetchPreview
           ? fetchMergedRoutePreview(apiBase, previewChain, routePreviewAbort, (partial) => {
-              if (routePreviewGen !== routePreviewRequestGenRef.current) return;
-              setRoutePreview(partial);
-              setRoutePreviewPending(false);
-            })
+            if (routePreviewGen !== routePreviewRequestGenRef.current) return;
+            setRoutePreview(partial);
+            setRoutePreviewPending(false);
+          })
           : Promise.resolve(null);
 
       /** Failsafe: if fetches hang without rejecting, still clear pending so the map can draw chord/leg geometry. */
@@ -1879,9 +2075,8 @@ export default function MapPage() {
                   setPlanJobCheckpointCount(acc.length);
                   setSegmentPrefixRefinementCount(countSegmentPrefixRefinementRows(acc));
                   const newest = acc[acc.length - 1];
-                  const newestSig = `${acc.length}:${newest.t ?? ""}:${newest.legIndex}:${
-                    newest.attempt?.kind ?? ""
-                  }`;
+                  const newestSig = `${acc.length}:${newest.t ?? ""}:${newest.legIndex}:${newest.attempt?.kind ?? ""
+                    }`;
                   if (newestSig !== lastCheckpointSig) {
                     lastCheckpointSig = newestSig;
                     bumpIdle();
@@ -2003,9 +2198,8 @@ export default function MapPage() {
                 countSegmentPrefixRefinementRows(pj.checkpoints as PlanJobCheckpointRow[])
               );
               const newest = pj.checkpoints[pj.checkpoints.length - 1];
-              const newestSig = `${pj.checkpoints.length}:${newest.t ?? ""}:${newest.legIndex}:${
-                newest.attempt?.kind ?? ""
-              }`;
+              const newestSig = `${pj.checkpoints.length}:${newest.t ?? ""}:${newest.legIndex}:${newest.attempt?.kind ?? ""
+                }`;
               if (newestSig !== lastCheckpointSig) {
                 lastCheckpointSig = newestSig;
                 idleDeadline = Date.now() + clientMs;
@@ -2168,18 +2362,15 @@ export default function MapPage() {
                 : undefined;
             const planJobCpSuffix =
               planUseJob() &&
-              loading &&
-              planJobCheckpointCount != null &&
-              planJobCheckpointCount > 0
-                ? ` · ${planJobCheckpointCount} checkpoint${
-                    planJobCheckpointCount === 1 ? "" : "s"
-                  } from server${
-                    segmentPrefixRefinementCount != null && segmentPrefixRefinementCount > 0
-                      ? ` · ${segmentPrefixRefinementCount} segment-hop refinement${
-                          segmentPrefixRefinementCount === 1 ? "" : "s"
-                        }`
-                      : ""
+                loading &&
+                planJobCheckpointCount != null &&
+                planJobCheckpointCount > 0
+                ? ` · ${planJobCheckpointCount} checkpoint${planJobCheckpointCount === 1 ? "" : "s"
+                } from server${segmentPrefixRefinementCount != null && segmentPrefixRefinementCount > 0
+                  ? ` · ${segmentPrefixRefinementCount} segment-hop refinement${segmentPrefixRefinementCount === 1 ? "" : "s"
                   }`
+                  : ""
+                }`
                 : "";
             const planSub =
               loading && planRefinementStage === "active"
@@ -2435,25 +2626,192 @@ export default function MapPage() {
             </label>
           ) : null}
 
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 13 }}>
-            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <input
-                type="checkbox"
-                checked={showChargerCandidates}
-                onChange={(e) => setShowChargerCandidates(e.target.checked)}
-              />
-              Show charger candidates
-            </label>
-            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <input
-                type="checkbox"
-                checked={showHotelCandidates}
-                onChange={(e) => setShowHotelCandidates(e.target.checked)}
-              />
-              Show hotel candidates
-            </label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, borderBottom: "1px solid #ddd", paddingBottom: 8 }}>
+            <button
+              type="button"
+              onClick={() => setPoiMode("off")}
+              style={{
+                padding: "8px 12px",
+                background: poiMode === "off" ? "#0b7cff" : "#e5e7eb",
+                color: poiMode === "off" ? "#fff" : "#374151",
+                border: "none",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontWeight: poiMode === "off" ? 600 : 500,
+                fontSize: 13
+              }}
+            >
+              EV Route
+            </button>
+            <button
+              type="button"
+              onClick={() => setPoiMode("all")}
+              style={{
+                padding: "8px 12px",
+                background: poiMode !== "off" ? "#0b7cff" : "#e5e7eb",
+                color: poiMode !== "off" ? "#fff" : "#374151",
+                border: "none",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontWeight: poiMode !== "off" ? 600 : 500,
+                fontSize: 13
+              }}
+            >
+              POI Select
+            </button>
           </div>
-          {!defaultShowCandidates || !defaultShowWaypoints ? (
+
+          {poiMode === "off" ? (
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 13 }}>
+              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={showChargerCandidates}
+                  onChange={(e) => setShowChargerCandidates(e.target.checked)}
+                />
+                Show charger candidates
+              </label>
+              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={showHotelCandidates}
+                  onChange={(e) => setShowHotelCandidates(e.target.checked)}
+                />
+                Show hotel candidates
+              </label>
+            </div>
+          ) : null}
+
+          {poiMode !== "off" ? (
+            <fieldset
+              style={{
+                marginTop: 12,
+                padding: "12px 12px 10px",
+                border: "1px solid #ddd",
+                borderRadius: 6,
+                background: "#fafafa"
+              }}
+            >
+              <legend style={{ fontSize: 13, fontWeight: 600 }}>POI Select Filters</legend>
+              <p style={{ margin: "0 0 10px 0", fontSize: 12, color: "#555" }}>
+                Filter corridor POIs and select to lock into your route.
+              </p>
+              <div style={{ display: "grid", gap: 8, marginBottom: 10, fontSize: 13 }}>
+                <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    type="radio"
+                    name="poiMode"
+                    checked={poiMode === "all"}
+                    onChange={() => setPoiMode("all")}
+                  />
+                  All POIs
+                </label>
+                <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    type="radio"
+                    name="poiMode"
+                    checked={poiMode === "charger"}
+                    onChange={() => setPoiMode("charger")}
+                  />
+                  Chargers
+                </label>
+                <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    type="radio"
+                    name="poiMode"
+                    checked={poiMode === "accommodation"}
+                    onChange={() => setPoiMode("accommodation")}
+                  />
+                  Hotels
+                </label>
+              </div>
+              {poiMode === "charger" ? (
+                <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                  <div>Network filter (optional)</div>
+                  <input
+                    value={poiNetwork}
+                    onChange={(e) => setPoiNetwork(e.target.value)}
+                    placeholder="e.g. Tesla, ChargePoint"
+                    style={{ width: "100%", padding: 8 }}
+                  />
+                </label>
+              ) : null}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                  <div>Corridor radius (mi)</div>
+                  <input
+                    value={poiRadiusMi}
+                    onChange={(e) => setPoiRadiusMi(e.target.value)}
+                    style={{ width: "100%", padding: 8 }}
+                  />
+                </label>
+                <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                  <div>Result limit</div>
+                  <input
+                    value={poiLimit}
+                    onChange={(e) => setPoiLimit(e.target.value)}
+                    style={{ width: "100%", padding: 8 }}
+                  />
+                </label>
+              </div>
+              <button
+                type="button"
+                onClick={onFetchPoiCandidates}
+                disabled={poiFetching || loading}
+                style={{ marginTop: 10, padding: 10 }}
+              >
+                {poiFetching ? "Fetching POIs…" : "Fetch corridor POIs"}
+              </button>
+              {poiError ? (
+                <div style={{ marginTop: 10, color: "crimson", fontSize: 12 }}>{poiError}</div>
+              ) : null}
+              {poiCandidates ? (
+                <div style={{ marginTop: 10, fontSize: 12, color: "#374151" }}>
+                  <div style={{ marginBottom: 6 }}>
+                    {poiCandidates.length} POI{poiCandidates.length === 1 ? "" : "s"} found. Click map markers or
+                    checkboxes to select.
+                  </div>
+                  <div style={{ display: "grid", gap: 6, maxHeight: 220, overflow: "auto" }}>
+                    {poiCandidates.map((poi) => {
+                      const selected = Boolean(poiSelection[poi.id]);
+                      return (
+                        <label
+                          key={poi.id}
+                          style={{
+                            display: "flex",
+                            gap: 8,
+                            alignItems: "center",
+                            padding: "6px 8px",
+                            background: selected ? "#eef2ff" : "#fff",
+                            border: "1px solid #e5e7eb",
+                            borderRadius: 6,
+                            cursor: "pointer"
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={() =>
+                              setPoiSelection((cur) => ({ ...cur, [poi.id]: !cur[poi.id] }))
+                            }
+                          />
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 12 }}>{poi.name}</div>
+                            <div style={{ fontSize: 11, color: "#6b7280" }}>
+                              {poi.poi_type} · {poi.city ?? poi.state ?? "unknown"}
+                              {poi.network ? ` · ${poi.network}` : ""}
+                            </div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+            </fieldset>
+          ) : null}
+
+          {poiMode === "off" && (!defaultShowCandidates || !defaultShowWaypoints) ? (
             <div
               style={{
                 marginTop: 6,
@@ -2740,9 +3098,9 @@ export default function MapPage() {
         ) : null}
 
         {jobLiveSolverLegs !== null &&
-        jobLiveRequestId &&
-        loading &&
-        jobLiveSolverLegs.some((leg) => Array.isArray(leg) && leg.length > 0) ? (
+          jobLiveRequestId &&
+          loading &&
+          jobLiveSolverLegs.some((leg) => Array.isArray(leg) && leg.length > 0) ? (
           <div style={{ marginTop: 16 }}>
             <h3 style={{ margin: "12px 0 6px 0", fontSize: 14 }}>Debug (MVP) — plan-job checkpoints</h3>
             <p style={{ fontSize: 12, color: "#555", marginBottom: 10 }}>
@@ -2857,15 +3215,15 @@ export default function MapPage() {
               const candidateHotelCount = candidatesForMap?.hotels?.length ?? 0;
               const mapDiagnostics = map
                 ? {
-                    routeSource: Boolean(map.getSource("route-geojson")),
-                    routeLayer: Boolean(map.getLayer("route-line")),
-                    stopsFallbackSource: Boolean(map.getSource("stops-fallback-geojson")),
-                    stopsFallbackCircle: Boolean(map.getLayer("stops-fallback-circle")),
-                    stopsFallbackSleep: Boolean(map.getLayer("stops-fallback-sleep")),
-                    candidatesFallbackSource: Boolean(map.getSource("candidates-fallback-geojson")),
-                    candidatesFallbackChargers: Boolean(map.getLayer("candidates-fallback-chargers")),
-                    candidatesFallbackHotels: Boolean(map.getLayer("candidates-fallback-hotels"))
-                  }
+                  routeSource: Boolean(map.getSource("route-geojson")),
+                  routeLayer: Boolean(map.getLayer("route-line")),
+                  stopsFallbackSource: Boolean(map.getSource("stops-fallback-geojson")),
+                  stopsFallbackCircle: Boolean(map.getLayer("stops-fallback-circle")),
+                  stopsFallbackSleep: Boolean(map.getLayer("stops-fallback-sleep")),
+                  candidatesFallbackSource: Boolean(map.getSource("candidates-fallback-geojson")),
+                  candidatesFallbackChargers: Boolean(map.getLayer("candidates-fallback-chargers")),
+                  candidatesFallbackHotels: Boolean(map.getLayer("candidates-fallback-hotels"))
+                }
                 : null;
               return (
                 <div
@@ -2927,9 +3285,9 @@ export default function MapPage() {
             ) : null}
 
             {plan.status === "ok" &&
-            routePreview?.preview &&
-            (routePreview.preview.horizon.maneuvers.length > 0 ||
-              (routePreview.preview.nextHorizon?.maneuvers?.length ?? 0) > 0) ? (
+              routePreview?.preview &&
+              (routePreview.preview.horizon.maneuvers.length > 0 ||
+                (routePreview.preview.nextHorizon?.maneuvers?.length ?? 0) > 0) ? (
               <div
                 style={{
                   marginTop: 16,
@@ -3133,12 +3491,12 @@ export default function MapPage() {
                       <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Drive min</th>
                       <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Charge min</th>
                       <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Chord mi ≈</th>
-                        {(plan.rangeLegs ?? []).some((rl) => typeof rl.usableRangeMiles === "number") ? (
-                          <>
-                            <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Max hop mi ≈</th>
-                            <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Range budget mi</th>
-                          </>
-                        ) : null}
+                      {(plan.rangeLegs ?? []).some((rl) => typeof rl.usableRangeMiles === "number") ? (
+                        <>
+                          <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Max hop mi ≈</th>
+                          <th style={{ textAlign: "right", padding: 4, color: "#0e7490" }}>Range budget mi</th>
+                        </>
+                      ) : null}
                     </tr>
                   </thead>
                   <tbody>
@@ -3219,14 +3577,14 @@ export default function MapPage() {
                   const sr = d.sourceRouting as Record<string, unknown> | undefined;
                   const pc = d.providerCalls as
                     | Record<
-                        string,
-                        {
-                          calls?: number;
-                          totalMs?: number;
-                          avgMs?: number;
-                          durationsMs?: unknown;
-                        }
-                      >
+                      string,
+                      {
+                        calls?: number;
+                        totalMs?: number;
+                        avgMs?: number;
+                        durationsMs?: unknown;
+                      }
+                    >
                     | undefined;
                   const segmentsAttempted = d.segmentsAttempted;
                   const multiLegDbg = d.multiLeg === true;
@@ -3339,21 +3697,21 @@ export default function MapPage() {
                       ) : null}
                       {multiLegDbg && Array.isArray(legDebugList) && legDebugList.length > 0
                         ? legDebugList.map((legDbg, li) => {
-                            const lg =
-                              legDbg && typeof legDbg === "object"
-                                ? (legDbg as Record<string, unknown>)
-                                : {};
-                            const segs = lg.segmentsAttempted;
-                            if (!Array.isArray(segs) || segs.length === 0) return null;
-                            return (
-                              <DebugSolverAttemptsList
-                                key={`${plan.requestId ?? "unknown"}-solver-leg-${li}`}
-                                segments={segs}
-                                heading={`Waypoint leg ${li + 1} · solver attempts (staggered readout)`}
-                                requestId={`${plan.requestId ?? "unknown"}-leg-${li}`}
-                              />
-                            );
-                          })
+                          const lg =
+                            legDbg && typeof legDbg === "object"
+                              ? (legDbg as Record<string, unknown>)
+                              : {};
+                          const segs = lg.segmentsAttempted;
+                          if (!Array.isArray(segs) || segs.length === 0) return null;
+                          return (
+                            <DebugSolverAttemptsList
+                              key={`${plan.requestId ?? "unknown"}-solver-leg-${li}`}
+                              segments={segs}
+                              heading={`Waypoint leg ${li + 1} · solver attempts (staggered readout)`}
+                              requestId={`${plan.requestId ?? "unknown"}-leg-${li}`}
+                            />
+                          );
+                        })
                         : null}
                       {pc && typeof pc === "object" && Object.keys(pc).length > 0 ? (
                         <div

@@ -15,7 +15,11 @@ import {
 import { buildRoutePreviewSingleLeg } from "./planner/routePreview";
 import { withTimeout } from "./planTimeout";
 import { ProviderCallMetrics, runPlanWithProviderMetrics } from "./services/providerCallMetrics";
-import { isPoiServicesCorridorEnabled } from "./services/poiServicesClient";
+import {
+  isPoiServicesCorridorEnabled,
+  postCorridorQuery
+} from "./services/poiServicesClient";
+import type { PoiServicesPoi } from "./services/poiServicesTypes";
 import path from "path";
 import { existsSync } from "fs";
 
@@ -465,6 +469,243 @@ app.post("/candidates", async (req, res) => {
   }
 });
 
+const corridorPoisSchema = z.object({
+  shape: z.array(latLngSchema).min(2).max(5000),
+  corridor_radius_mi: z.number().positive().max(500),
+  poi_type: z.enum(["accommodation", "charger", "all"]),
+  network: z.string().trim().min(1).optional(),
+  limit: z.number().int().positive().max(2000).optional()
+});
+
+type CorridorPoiResponseRow = {
+  id: string;
+  poi_type: "accommodation" | "charger";
+  name: string;
+  lat: number;
+  lon: number;
+  address?: string;
+  city?: string;
+  state?: string;
+  zip_code?: string;
+  network?: string;
+  distance_from_route_mi?: number;
+  attributes: Record<string, string | number | boolean | undefined>;
+};
+
+function poiResponseType(rawType: "hotel" | "charger"): "accommodation" | "charger" {
+  return rawType === "hotel" ? "accommodation" : "charger";
+}
+
+function poiId(rawType: "hotel" | "charger", poi: PoiServicesPoi): string {
+  return `poi_services:${rawType}:${poi.id}`;
+}
+
+function toRadians(deg: number): number {
+  return (deg * Math.PI) / 180;
+}
+
+function equirectangularProjection(point: { lat: number; lon: number }, origin: { lat: number; lon: number }) {
+  const latRad = toRadians(point.lat);
+  const lonRad = toRadians(point.lon);
+  const originLatRad = toRadians(origin.lat);
+  const originLonRad = toRadians(origin.lon);
+  const x = (lonRad - originLonRad) * Math.cos(originLatRad);
+  const y = latRad - originLatRad;
+  return { x, y };
+}
+
+function distanceBetweenProjected(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy) * 3960; // Earth radius in miles
+}
+
+function distanceFromPointToSegmentMiles(
+  point: { lat: number; lon: number },
+  start: { lat: number; lon: number },
+  end: { lat: number; lon: number }
+): number {
+  const p = equirectangularProjection(point, point);
+  const a = equirectangularProjection(start, point);
+  const b = equirectangularProjection(end, point);
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const ab2 = abx * abx + aby * aby;
+  if (ab2 === 0) {
+    return distanceBetweenProjected(p, a);
+  }
+  const t = Math.max(0, Math.min(1, (p.x - a.x) * abx + (p.y - a.y) * aby) / ab2);
+  const projection = { x: a.x + t * abx, y: a.y + t * aby };
+  return distanceBetweenProjected(p, projection);
+}
+
+function distanceFromRouteMiles(
+  poi: { lat: number; lon: number },
+  shape: Array<{ lat: number; lon: number }>
+): number {
+  let minMiles = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < shape.length - 1; i++) {
+    const miles = distanceFromPointToSegmentMiles(poi, shape[i]!, shape[i + 1]!);
+    if (miles < minMiles) {
+      minMiles = miles;
+    }
+  }
+  return Number.isFinite(minMiles) ? minMiles : 0;
+}
+
+function mapPoiServicesPoiToResponse(
+  poi: PoiServicesPoi,
+  rawType: "hotel" | "charger",
+  shape: Array<{ lat: number; lon: number }>
+): CorridorPoiResponseRow {
+  return {
+    id: poiId(rawType, poi),
+    poi_type: poiResponseType(rawType),
+    name: poi.name || (rawType === "hotel" ? "Hotel" : "Charger"),
+    lat: poi.lat,
+    lon: poi.lon,
+    address: poi.address,
+    city: poi.city,
+    state: poi.state,
+    zip_code: poi.zip_code,
+    network: poi.network,
+    distance_from_route_mi: distanceFromRouteMiles(poi, shape),
+    attributes: {
+      rooms: poi.rooms,
+      onsite_charger_level: poi.onsite_charger_level,
+      onsite_charger_power_kw: poi.onsite_charger_power_kw,
+      onsite_charger_ports: poi.onsite_charger_ports,
+      onsite_charger_network: poi.onsite_charger_network,
+      connector_types: poi.connector_types,
+      power_kw: poi.power_kw,
+      num_ports: poi.num_ports,
+      nearby_dcfc_id: poi.nearby_dcfc_id,
+      nearby_dcfc_distance_yd: poi.nearby_dcfc_distance_yd,
+      status: poi.status,
+      website: poi.website,
+      phone: poi.phone
+    }
+  };
+}
+
+function applyLimitSplit(
+  chargers: CorridorPoiResponseRow[],
+  hotels: CorridorPoiResponseRow[],
+  limit: number
+): CorridorPoiResponseRow[] {
+  const total = chargers.length + hotels.length;
+  if (total <= limit) {
+    return [...chargers, ...hotels];
+  }
+  const chargerQuota = Math.max(1, Math.round((chargers.length / total) * limit));
+  const hotelQuota = Math.max(1, limit - chargerQuota);
+  const cappedChargerQuota = Math.min(chargerQuota, chargers.length);
+  const cappedHotelQuota = Math.min(hotelQuota, hotels.length);
+  const remainder = limit - (cappedChargerQuota + cappedHotelQuota);
+  const extraChargers = remainder > 0 ? Math.min(remainder, chargers.length - cappedChargerQuota) : 0;
+  const extraHotels = remainder > extraChargers ? Math.min(remainder - extraChargers, hotels.length - cappedHotelQuota) : 0;
+  return [
+    ...chargers.slice(0, cappedChargerQuota + extraChargers),
+    ...hotels.slice(0, cappedHotelQuota + extraHotels)
+  ];
+}
+
+app.post("/corridor/pois", async (req, res) => {
+  const requestId =
+    (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
+  const startedAt = Date.now();
+  const responseVersion = "v2-1-corridor-pois";
+
+  try {
+    const parsed = corridorPoisSchema.parse(req.body);
+    const rawLayers: Array<"charger" | "hotel"> =
+      parsed.poi_type === "all"
+        ? ["charger", "hotel"]
+        : parsed.poi_type === "accommodation"
+          ? ["hotel"]
+          : ["charger"];
+
+    const queryBody = {
+      shape: parsed.shape,
+      corridor_radius_mi: parsed.corridor_radius_mi,
+      layers: rawLayers,
+      filters:
+        parsed.poi_type === "charger"
+          ? { network: parsed.network }
+          : undefined,
+      limit: parsed.limit
+    } as const;
+
+    const corridor = await postCorridorQuery(queryBody);
+    let chargerPois: CorridorPoiResponseRow[] = [];
+    let hotelPois: CorridorPoiResponseRow[] = [];
+
+    if (corridor.charger) {
+      chargerPois = corridor.charger
+        .map((poi) => mapPoiServicesPoiToResponse(poi, "charger", parsed.shape))
+        .filter((poi) =>
+          parsed.network && parsed.poi_type === "all"
+            ? poi.network?.toLowerCase() === parsed.network.toLowerCase()
+            : true
+        );
+    }
+    if (corridor.hotel) {
+      hotelPois = corridor.hotel.map((poi) => mapPoiServicesPoiToResponse(poi, "hotel", parsed.shape));
+    }
+
+    let pois: CorridorPoiResponseRow[] = [];
+    if (parsed.poi_type === "all") {
+      pois = parsed.limit ? applyLimitSplit(chargerPois, hotelPois, parsed.limit) : [...chargerPois, ...hotelPois];
+    } else if (parsed.poi_type === "charger") {
+      pois = parsed.limit ? chargerPois.slice(0, parsed.limit) : chargerPois;
+    } else {
+      pois = parsed.limit ? hotelPois.slice(0, parsed.limit) : hotelPois;
+    }
+
+    res.status(200).json({
+      requestId,
+      responseVersion,
+      status: "ok",
+      pois,
+      debug: {
+        durationMs: Date.now() - startedAt,
+        filters: {
+          poi_type: parsed.poi_type,
+          network: parsed.network
+        },
+        corridor: {
+          radius_mi: corridor.corridor?.radius_mi,
+          shape_points: corridor.corridor?.shape_points,
+          warnings: corridor.warnings
+        }
+      }
+    });
+  } catch (err) {
+    const isTimeout =
+      err instanceof Error &&
+      /exceeded time limit|timed out|ECONNABORTED/i.test(err.message);
+    console.log(
+      JSON.stringify({
+        event: "corridor_pois_request_error",
+        deploymentEnv,
+        requestId,
+        responseVersion,
+        durationMs: Date.now() - startedAt,
+        message: err instanceof Error ? err.message : String(err),
+        timeout: isTimeout
+      })
+    );
+    const msg = err instanceof Error ? err.message : "Unexpected error fetching corridor POIs";
+    const statusCode = isTimeout ? 408 : 400;
+    res.status(statusCode).json({
+      requestId,
+      responseVersion,
+      status: "error",
+      message: msg
+    });
+  }
+});
+
 type PlanBodyParsed = z.infer<typeof planSchema>;
 
 async function runPlanJobInBackground(args: {
@@ -717,7 +958,7 @@ function startPlanJobStreamHeartbeat(
   format: "ndjson" | "sse"
 ): () => void {
   const ms = planJobSseHeartbeatIntervalMs();
-  if (ms <= 0) return () => {};
+  if (ms <= 0) return () => { };
   const id = setInterval(() => {
     if (res.writableEnded) return;
     const payload = JSON.stringify({ type: "heartbeat", t: Date.now() });
@@ -806,12 +1047,12 @@ app.post("/plan", async (req, res) => {
     const parsed = planSchema.parse(req.body);
     responseVersion =
       parsed.waypoints?.length ||
-      parsed.includeCandidates ||
-      (parsed.lockedChargersByLeg && parsed.lockedChargersByLeg.length > 0) ||
-      parsed.lockedHotelId ||
-      parsed.replanFrom ||
-      parsed.planJob ||
-      parsed.optimizeWaypointOrder
+        parsed.includeCandidates ||
+        (parsed.lockedChargersByLeg && parsed.lockedChargersByLeg.length > 0) ||
+        parsed.lockedHotelId ||
+        parsed.replanFrom ||
+        parsed.planJob ||
+        parsed.optimizeWaypointOrder
         ? "v2-1"
         : "mvp-1";
     const replanLog =

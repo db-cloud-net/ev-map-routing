@@ -34,6 +34,14 @@ This document captures **product and UX decisions** for EV trip planning with **
 | **POI corridor** | **Fail closed by default** — when **`POI_SERVICES_BASE_URL`** is configured and **`POI_SERVICES_FALLBACK_TO_NREL`** is not `true`, a failed or empty POI corridor query returns **`errorCode`** **`POI_SERVICES_CORRIDOR_FAILED`** or **`POI_SERVICES_NO_CHARGERS`** (no silent NREL corridor). See **[`poi-corridor-sleep-stops.md`](./designs/poi-corridor-sleep-stops.md)**. |
 | **Trust** | Surface **data freshness** where the product exposes it (e.g. POI/manifest provenance, snapshot dates when relevant) so users can judge confidence. |
 
+### 2.1 POI Select mode
+
+When the map is in **POI Select** mode, the existing EV itinerary overlays are hidden while the active route polyline remains visible. Users can filter corridor POIs by type, distance from the route, and charger network (charger network filtering applies only to `charger` or `all` mode; it is unavailable for `accommodation`).
+
+Selected POIs are highlighted on the map and added to a sidebar stop list. The UI does not replan automatically when POIs are selected; users explicitly tap **Recalculate Route** to convert selected POIs into ordered waypoints and trigger `POST /plan`.
+
+Selected POI state persists across mode toggles. If the replan request fails, the app keeps the current selections and returns the user to POI Select mode with an error state so they can retry without losing progress.
+
 *Implementation notes:* **`debug.sourceRouting`** carries **`sourceRoutingMode`** / **`effectiveSourceRoutingMode`** (both **`poi_only`**); legacy mirror snapshot fields were removed. Corridor sampling env: **`CORRIDOR_*`** (aliases include deprecated **`NREL_*`** names) — see **`TESTING.md`** and **`.env.example`**. On Synology Docker (**`prod-network`**), **`POI_SERVICES_BASE_URL=http://poi:8010`** — **[`d1-runbook.md`](./d1-runbook.md)**.
 
 ---
