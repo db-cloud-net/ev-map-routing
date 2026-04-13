@@ -24,7 +24,7 @@
 
 **POI Services v2 (data plane) — shipped (2026-03-24):** POI shipped with corridor query + fail-closed; **`lockedHotelId`** supports **`poi_services:hotel:*`**; overnight sleep meta uses hotel **`nearby_dcfc_*`** and POI **`pairs`** / corridor join (optional legacy NREL path in code for dev only) + optional **`POI_REVIEW_LOG`** NDJSON for data QA.
 
-**Planned feature:** `docs/designs/poi-route-overlay.md` — POI Select route corridor UX, selected POI waypoint selection, and replan integration.
+**POI Select (shipped 2026-04-12):** `docs/designs/poi-route-overlay.md` — POI Select corridor overlay shipped: `POST /corridor/pois` endpoint, 150-mile sectioned parallel queries (50 POIs/section default, user-configurable), hotel+charger pairing markers (dark red ≤400 yd), selected POI sort-to-top, selections persist across EV Route ↔ POI Select toggle, selected POIs injected as `waypoints` on Plan Trip.
 
 ### Immediate next steps (pick one)
 
@@ -62,6 +62,7 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 - **V2 Slice 1 — Locks (shipped in code):** `lockedChargersByLeg` + `lockedHotelId` on **`POST /plan`**, **chained** `planLeastTimeSegment` (`planTripOneLegLocked.ts`), **per-leg** rows + **`errorCode`** taxonomy (**`docs/V2_API.md`**), **`V2_MAX_LOCKED_CHARGERS`** (`.env.example`). Map UI: **tap-to-lock** on charger/hotel candidates for **single‑segment** trips only (**`web/src/app/map/page.tsx`**).
 - **Range legs (API, shipped):** **`rangeLegs`** + **`debug.rangeLegs`** on successful **`POST /plan`** (charge-boundary grouping from least-time itinerary) — **`api/src/planner/rangeLegs.ts`**. **Map:** polyline split + **Range legs (debug)** sidebar are **opt-in** via **`NEXT_PUBLIC_MAP_DEBUG_RANGE_LEGS`** (`web/src/lib/rangeLegRouteFeatures.ts`, **`docs/WEB_SWITCHES.md`**); standard product is a **single blue** route line.
 - **Planner infeasibility UX (shipped):** **`No feasible itinerary for segment`** responses append the feasibility-model line and expose **`debug.noFeasibleItinerary`** — **`TESTING.md`** troubleshooting.
+- **POI Select overlay (shipped 2026-04-12):** `POST /corridor/pois` endpoint in `api/src/server.ts` — thin proxy to POI Services `POST /corridor/query` with shape sampling, type mapping (`accommodation` ↔ `hotel`), and `distance_from_route_mi` enrichment. Web map: two-mode toggle (EV Route / POI Select), 150-mile sectioned parallel corridor queries (1 mi sampling; default **50 POIs/section**, user-configurable), hotel+charger pairing markers (**dark red `#c53030`** for pairs ≤400 yd, teal `#39a6a1` for unpaired chargers, orange `#f6ad55` for unpaired hotels), selected POIs sort to top of sidebar list, selections persist through EV Route ↔ POI Select toggle (cleared only on type switch), selected POI coordinates injected as `waypoints` into `POST /plan` on Plan Trip. Documented: **`docs/designs/poi-route-overlay.md`** · **`docs/V2_API.md`** § `POST /corridor/pois` · **`docs/MAP_AND_NAV.md`** § POI Select mode · **`docs/ROUTING_UX_SPEC.md`** §2.1.
 
 **Known gaps / don’t assume “done”**
 
