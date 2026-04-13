@@ -2858,38 +2858,38 @@ export default function MapPage() {
                         return as === bs ? 0 : as ? -1 : 1;
                       })
                       .map((poi) => {
-                      const selected = Boolean(poiSelection[poi.id]);
-                      return (
-                        <label
-                          key={poi.id}
-                          style={{
-                            display: "flex",
-                            gap: 8,
-                            alignItems: "center",
-                            padding: "6px 8px",
-                            background: selected ? "#eef2ff" : "#fff",
-                            border: "1px solid #e5e7eb",
-                            borderRadius: 6,
-                            cursor: "pointer"
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selected}
-                            onChange={() =>
-                              setPoiSelection((cur) => ({ ...cur, [poi.id]: !cur[poi.id] }))
-                            }
-                          />
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: 600, fontSize: 12 }}>{poi.name}</div>
-                            <div style={{ fontSize: 11, color: "#6b7280" }}>
-                              {poi.poi_type} · {poi.city ?? poi.state ?? "unknown"}
-                              {poi.network ? ` · ${poi.network}` : ""}
+                        const selected = Boolean(poiSelection[poi.id]);
+                        return (
+                          <label
+                            key={poi.id}
+                            style={{
+                              display: "flex",
+                              gap: 8,
+                              alignItems: "center",
+                              padding: "6px 8px",
+                              background: selected ? "#eef2ff" : "#fff",
+                              border: "1px solid #e5e7eb",
+                              borderRadius: 6,
+                              cursor: "pointer"
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              onChange={() =>
+                                setPoiSelection((cur) => ({ ...cur, [poi.id]: !cur[poi.id] }))
+                              }
+                            />
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontWeight: 600, fontSize: 12 }}>{poi.name}</div>
+                              <div style={{ fontSize: 11, color: "#6b7280" }}>
+                                {poi.poi_type} · {poi.city ?? poi.state ?? "unknown"}
+                                {poi.network ? ` · ${poi.network}` : ""}
+                              </div>
                             </div>
-                          </div>
-                        </label>
-                      );
-                    })}
+                          </label>
+                        );
+                      })}
                   </div>
                 </div>
               ) : null}
