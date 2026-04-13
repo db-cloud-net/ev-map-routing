@@ -10,8 +10,13 @@
     "dev:web": "npm -w web run dev",
     "dev": "npm run dev:api",
     "build": "npm -w api run build && npm -w web run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "qa:smoke": "node scripts/qa-smoke-all.mjs",
     "poi:review-summary": "node scripts/poi-review-log-summary.mjs"
+  },
+  "devDependencies": {
+    "vitest": "^3.1.1"
   }
 }
 
