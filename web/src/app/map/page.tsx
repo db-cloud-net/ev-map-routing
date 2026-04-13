@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { MapCanvas } from "../../components/MapCanvas";
 import type {
   CandidatesApiResponse,
   ItineraryLeg,
@@ -582,7 +583,6 @@ function DebugSolverAttemptsList({
 }
 
 export default function MapPage() {
-  const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const candidateMarkersRef = useRef<maplibregl.Marker[]>([]);
@@ -789,29 +789,6 @@ export default function MapPage() {
     []
   );
 
-  useEffect(() => {
-    if (!mapEl.current) return;
-    if (mapRef.current) return;
-
-    // Basemap with readable city/highway labels.
-    const styleUrl = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json";
-    const map = new maplibregl.Map({
-      container: mapEl.current,
-      style: styleUrl,
-      center: [-97.0, 38.0],
-      zoom: 3
-    });
-
-    map.addControl(new maplibregl.NavigationControl(), "top-right");
-    map.once("load", () => {
-      map.resize();
-      setMapReady(true);
-    });
-    map.on("styledata", () => {
-      if (map.isStyleLoaded()) setMapReady(true);
-    });
-    mapRef.current = map;
-  }, []);
 
   /**
    * Locks are only clickable for a single driving segment (no waypoints).
@@ -3866,8 +3843,11 @@ export default function MapPage() {
           </div>
         ) : null}
       </div>
-      <div
-        ref={mapEl}
+      <MapCanvas
+        onMapReady={(map) => {
+          mapRef.current = map;
+          setMapReady(true);
+        }}
         style={{
           position: "relative",
           width: "100%",
