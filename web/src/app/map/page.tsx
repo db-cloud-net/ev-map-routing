@@ -2032,7 +2032,7 @@ export default function MapPage() {
           setPlan((cur) => {
             if (!cur) return errPlan;
             const mergedDebug = {
-              ...(((cur.debug ?? {}) as Record<string, unknown>) ?? {}),
+              ...((cur.debug ?? {}) as Record<string, unknown>),
               ...(pj.debug ?? {}),
               planJobTerminalError: true,
               planJobTerminalErrorMessage: msg
