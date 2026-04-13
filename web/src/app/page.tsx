@@ -1,13 +1,6 @@
-import Link from "next/link";
+import { redirect } from "next/navigation";
 
 export default function HomePage() {
-  return (
-    <div style={{ padding: 24, fontFamily: "system-ui" }}>
-      <h1>EV Travel Planner</h1>
-      <p>
-        <Link href="/map">Open planner</Link>
-      </p>
-    </div>
-  );
+  redirect("/trip");
 }
 
