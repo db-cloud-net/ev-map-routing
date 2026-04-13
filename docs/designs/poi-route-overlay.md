@@ -1,8 +1,8 @@
-# POI Route Overlay — Feature Plan
+# POI Route Overlay — Implementation Reference
 
-**Version:** 1.0
-**Status:** Planned
-**Date:** 2026-03-28
+**Version:** 2.0
+**Status:** Shipped (2026-04-12)
+**Date:** 2026-03-28 (plan) / 2026-04-12 (implemented)
 
 ---
 
@@ -85,41 +85,53 @@ to EV Route and back. The route polyline is the same in both modes.
 
 ### 3.2 POI Filter Controls
 
-Visible only in POI Select mode. Positioned above the map or in a collapsible sidebar.
+Visible only in POI Select mode. Rendered as a collapsible fieldset in the left sidebar.
 
 ```
-┌─────────────────────────────────────┐
-│  POI Type:  [All ▼]                 │
-│             ○ All                   │
-│             ○ Accommodation         │
-│             ○ Charger               │
-│                                     │
-│  Distance from route: [──●──] 10 mi │
-│                       1    50       │
-│                                     │
-│  Network:   [Any ▼]   (chargers     │
-│                        only)        │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────┐
+│  POI Select Filters                     │
+│  Filter corridor POIs and select to     │
+│  lock into your route.                  │
+│                                         │
+│  ○ All POIs   ○ Chargers   ○ Hotels     │
+│                                         │
+│  Network filter (charger mode only):    │
+│  [e.g. Tesla, ChargePoint          ]    │
+│                                         │
+│  Corridor radius (mi) │ Per segment     │
+│  [   25              ] │ [  50       ]  │
+│                                         │
+│  [ Fetch corridor POIs ]                │
+└─────────────────────────────────────────┘
 ```
 
-- **POI Type**: filter by `poi_type`. "Accommodation" maps to `hotel` internally.
-- **Distance from route**: radius slider, 1-50 miles. Controls the corridor
-  query `corridor_radius_mi`. Default 10.
-- **Network**: optional filter for charger networks (Tesla, Electrify America,
-  ChargePoint, EVgo, etc.). **Only applies when POI Type is "Charger" or "All."**
-  When POI Type is "Accommodation", the Network dropdown is disabled/hidden —
-  hotel brand filtering is a separate future feature (see roadmap §9.3). When
-  POI Type is "All", the Network filter narrows only the charger results;
-  accommodations pass through unfiltered.
+- **POI Type**: radio group — All POIs / Chargers / Hotels. "Hotels" maps to `accommodation` internally, which the API translates to `poi_type: "hotel"` for the POI Service.
+- **Corridor radius (mi)**: corridor half-width for queries. Default **25 mi**. Text input (not a slider).
+- **Per segment**: POI result limit **per 150-mile route section**. Default **50**. Applied directly to each sectioned query (see §4.1 sectioning). Total POIs fetched = sections × per-segment value, minus duplicates.
+- **Network filter**: optional text input, charger mode only. Narrows results to a specific charging network (Tesla, ChargePoint, etc.). Hidden when POI Type is Hotels.
 
-Changing any filter triggers a new POI corridor query. Debounce slider at 300ms.
+Fetch is user-triggered — the **Fetch corridor POIs** button. No auto-fetch on filter change.
 
 ### 3.3 POI Pins on Map
 
-- Unselected: small circle, colored by type (blue=charger, green=accommodation)
-- Selected: larger circle with checkmark, highlighted color
-- Tapping an unselected pin opens the info tag
-- Tapping a selected pin deselects it (removes from stop list)
+Pins are 18px circles rendered via `maplibregl.Marker` with a custom `HTMLDivElement`.
+
+**Color scheme:**
+
+| Condition | Color | Notes |
+|-----------|-------|-------|
+| Charger — not paired | Teal `#39a6a1` | Standard DCFC marker |
+| Hotel — not paired | Light orange `#f6ad55` | No nearby charger |
+| Charger **or** hotel — paired | Dark red `#c53030` | Within 400 yd of each other (same algorithm as EV-route view) |
+| Any — selected | Same base color + black border ring | `border: 2px solid #111` |
+
+**Pairing algorithm:** a hotel and a charger are "paired" when `haversineMiles(hotel, charger) ≤ 400/1760` (~0.227 miles, 400 yards). Computed client-side across all POIs in the current result set. When `poi_type` is "all", both hotels and chargers in the results are checked against each other. When only one type is in the results, no pairing occurs (nothing to compare).
+
+**Selection behavior:**
+- Clicking an unselected pin selects it (highlights + border)
+- Clicking a selected pin deselects it
+- Selected POIs move to the **top of the sidebar list** immediately
+- No info popup / tap target beyond the click toggle (info tag from the design spec is not yet implemented)
 
 ### 3.4 Info Tag (on pin tap)
 
@@ -235,28 +247,30 @@ When the user taps **Recalculate Route**:
 
 ## 4. API Changes (ev-map-routing)
 
-### 4.1 New Endpoint: `POST /corridor/pois`
+### 4.1 Endpoint: `POST /corridor/pois`
 
-Returns filterable POIs along an existing route corridor. This is a thin proxy
-to the POI Service's `/corridor/query` with response mapping.
+Returns filterable POIs along an existing route corridor. Implemented in `api/src/server.ts`. Thin proxy to the POI Service's `POST /corridor/query` with shape sampling, type mapping, and `distance_from_route_mi` enrichment.
 
+**Request (per-section — see client sectioning below):**
 ```typescript
 POST /corridor/pois
 {
-  "shape": [...],              // route polyline (from initial plan)
-  "corridor_radius_mi": 10,   // user-adjustable
+  "shape": [...],              // sampled route polyline for this section
+  "corridor_radius_mi": 25,   // user-adjustable; default 25
   "poi_type": "accommodation", // or "charger", "all"
-  "network": "Tesla",          // optional; chargers only (ignored for accommodation)
-  "limit": 500                 // optional cap
+  "network": "Tesla",          // optional; chargers only
+  "limit": 50                  // per-section cap (not a global total)
 }
+```
 
-Response:
+**Response:**
+```typescript
 {
   "status": "ok",
   "pois": [
     {
       "id": "poi_services:hotel:16247",
-      "poi_type": "accommodation",    // mapped from "hotel"
+      "poi_type": "accommodation",    // mapped from POI Service "hotel"
       "name": "Holiday Inn Express Mason City",
       "lat": 43.147,
       "lon": -93.246,
@@ -271,44 +285,33 @@ Response:
         "nearby_dcfc_distance_yd": 285,
         "rooms": 120
       }
-    },
-    ...
+    }
   ]
 }
 ```
 
-The `poi_type` mapping:
-- Client sends `"accommodation"` → API queries POI Service with `poi_type: "hotel"`
-- API response maps `"hotel"` → `"accommodation"` in the output
+**Type mapping:** client `"accommodation"` → POI Service `"hotel"` on request; `"hotel"` → `"accommodation"` on response. `"charger"` and `"all"` pass through unchanged.
 
-**Limit enforcement:**
-The `limit` parameter is enforced **server-side** by the POI Service during
-shard scan (SQLite `LIMIT` clause). The ev-map-routing API passes it through
-without modification. Default is 500; max recommended is 2000 (above that,
-map rendering slows noticeably on the client).
+**Schema limits:** `shape` max 5,000 points; `corridor_radius_mi` max 500.
 
-When `poi_type: "all"` is requested with a limit, the server splits the limit
-across types proportionally to availability rather than applying it globally
-to the combined result. For example, `limit: 500` with 3,000 candidate chargers
-and 500 candidate accommodations in the corridor returns up to 430 chargers
-and up to 70 accommodations (weighted by counts). This prevents one dense type
-from starving the other.
+**Client-side sectioning (why multiple requests per fetch):**
 
-**Deduplication:**
-The POI Service deduplicates **within a single corridor query** by POI `id`
-(SQLite `DISTINCT`). Each POI appears at most once in a response, even if the
-shape crosses shard boundaries where the POI could be matched by multiple
-corridor segments.
+The POI Service fills `limit` from POIs nearest to the **start** of the shape, so a single long-route query returns everything near the origin and nothing near the destination. The web client solves this by:
 
-**Across queries** (e.g., user adjusts the radius slider, triggering a new
-fetch), the client is responsible for handling transitions:
-- The client **replaces** the previous POI list with the new response entirely
-  (not merge-dedup). This keeps state simple and ensures removed filters
-  cause POIs to disappear.
-- Selected stops (in the sidebar) persist across filter changes — they are
-  tracked separately from the filtered POI list and remain visible as selected
-  pins even if the current filter would exclude them. An info badge can mark
-them as "outside current filter" for clarity.
+1. **Distance-based shape sampling** — one point per mile (minimum 1-mile spacing) for uniform geographic coverage. Valhalla polylines cluster densely in cities; raw points would bias queries toward urban start points.
+
+2. **150-mile section splits** — the sampled shape is divided into ~150-mile sections. Each section is queried in **parallel** with the per-segment limit.
+
+3. **Client-side deduplication** — results from all sections are merged by POI `id`. A POI that falls within two adjacent sections (near a split boundary) appears once.
+
+```
+Route: Raleigh → Seattle (~2,800 mi)
+  → ~19 sections × 50 POIs each → up to 950 candidates, distributed across the full route
+```
+
+The **Per segment** UI control sets the `limit` sent to each section query. Default: **50**. Total POIs returned ≤ sections × per-segment (minus duplicates at section boundaries).
+
+**Fetch lifecycle:** clicking **Fetch corridor POIs** replaces the entire current candidate list. Selected POIs (in `poiSelection` state) are preserved through re-fetches so selections are not lost if the user re-fetches with a different radius. Switching between POI types (e.g. Chargers → Hotels) clears candidates and selections. Toggling to EV Route mode and back preserves the candidate list and selections.
 
 **POI ID format:**
 All POI IDs are stable strings of the form `poi_services:<type>:<numeric_id>`

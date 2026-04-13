@@ -95,6 +95,72 @@ User replans from **current** coordinates or a **planned stop** to **`end`** (an
 
 ---
 
+---
+
+## `POST /corridor/pois`
+
+Returns POIs along a route corridor for the **POI Select** map mode. This is a direct client-facing endpoint (not a proxy through `/plan`) so the web UI can fetch corridor POIs independently of trip planning.
+
+| | |
+|--|--|
+| **Method** | `POST /corridor/pois` |
+| **`responseVersion`** | `v2-1-corridor-pois` |
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `shape` | `{ lat, lon }[]` | yes | Sampled route polyline. Max **5,000 points**. The client sends one section of the route per request (see client sectioning below). |
+| `corridor_radius_mi` | number | yes | Corridor half-width in miles. Max **500**. |
+| `poi_type` | `"accommodation"` \| `"charger"` \| `"all"` | yes | POI type filter. `"accommodation"` is mapped to `"hotel"` for the POI Service query and back on response. |
+| `network` | string | no | Charger network filter (e.g. `"Tesla"`, `"ChargePoint"`). Ignored when `poi_type` is `"accommodation"`. |
+| `limit` | number | no | Result cap **per request** (not a global total — see sectioning). Default enforced by the POI Service. The web UI default is **50 per section**. |
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "pois": [
+    {
+      "id": "poi_services:hotel:16247",
+      "poi_type": "accommodation",
+      "name": "Holiday Inn Express Mason City",
+      "lat": 43.147,
+      "lon": -93.246,
+      "address": "4th St SW",
+      "city": "Mason City",
+      "state": "IA",
+      "network": "IHG",
+      "distance_from_route_mi": 0.3,
+      "attributes": {
+        "onsite_charger_level": "L2",
+        "onsite_charger_power_kw": 7.7,
+        "nearby_dcfc_distance_yd": 285,
+        "rooms": 120
+      }
+    }
+  ],
+  "debug": { "count": 1, "poiServiceDurationMs": 45 }
+}
+```
+
+`distance_from_route_mi` is the haversine distance from the POI to the nearest point in the provided `shape`.
+
+**Error responses:** HTTP 400 for schema violations (shape too large, radius out of range); HTTP 500 with `status: "error"` and `message` if the POI Service call fails.
+
+**Client sectioning strategy:** The POI Service fills `limit` from POIs nearest to the **start** of the shape. On long routes this causes all results to cluster near the origin. The web client avoids this by:
+
+1. Distance-sampling the route shape at 1-mile intervals.
+2. Splitting into **~150-mile sections** and calling `POST /corridor/pois` for each section **in parallel** with `limit = per-segment value`.
+3. Merging and deduplicating results by `id` client-side.
+
+This distributes results evenly across the full route. A Raleigh→Seattle route (~2,800 mi) produces ~19 sections; at 50 POIs/section that is up to ~950 candidates after deduplication.
+
+**See also:** [`docs/designs/poi-route-overlay.md`](./designs/poi-route-overlay.md) §4.1 for full implementation details.
+
+---
+
 ## Slice 3 — `POST /candidates`
 
 **Design notes & rollout:** **[`docs/designs/slice3-get-candidates.md`](designs/slice3-get-candidates.md)**.

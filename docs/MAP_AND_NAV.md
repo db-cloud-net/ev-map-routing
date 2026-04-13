@@ -34,6 +34,33 @@ So the line is **chords on the map**, not the road network. That matches what yo
 - **Corridor polyline** for charger/POI corridor sampling (`getRoutePolyline` along start→end when it succeeds) — POI Services or legacy NREL/mirror use that polyline to place corridor queries. Valhalla may return the route **`shape` as an encoded polyline string** (especially on long legs); the server must decode it the same way as route-preview. If decoding failed historically, the corridor fell back to **straight-line** sample points — candidate chargers then clustered along the chord instead of the highway (while the map blue line still followed roads from `/route-preview`).
 - **Leg timing** inside the solver (`getTravelTimeMinutes` / distance) so drive times are **road-based**, not haversine — but that does **not** export full polyline per hop to the client.
 
+### POI Select mode
+
+The map has two top-level modes toggled by **EV Route** / **POI Select** buttons:
+
+- **EV Route** (default): shows the planned itinerary — charge stop pins, hotel/sleep pins, route polyline, sidebar itinerary. The `poiMode` state is `"off"`.
+- **POI Select**: hides the EV itinerary overlays. Shows the route polyline and corridor POI candidates as map pins. Filter controls appear in the sidebar.
+
+**Mode switching:**
+- Switching to EV Route (POI Select → EV Route): the POI candidate list and selections are **preserved**. Switching back shows the same results.
+- Switching between POI types (e.g. Chargers → Hotels): candidates and selections are **cleared** (stale type cannot silently appear under a new filter).
+- Switching to EV Route does **not** clear selections — selected POIs remain available as waypoints when planning.
+
+**Map pin colors in POI Select mode:**
+
+| Color | Meaning |
+|-------|---------|
+| Teal `#39a6a1` | Charger — not within 400 yd of a hotel in the result set |
+| Light orange `#f6ad55` | Hotel — not within 400 yd of a charger |
+| Dark red `#c53030` | Either type — paired (hotel+charger within 400 yards of each other) |
+| Same color + black ring | Any — selected by user |
+
+The 400-yard pairing threshold matches the EV-route candidate view (`hasNearbyCharger`).
+
+**Sidebar list:** Selected POIs sort to the top. Checkboxes and map pin clicks both toggle selection.
+
+**Selected POIs as waypoints:** When the user clicks **Plan Trip** from EV Route mode with POI selections active, selected charger POIs are injected as ordered `waypoints` in the plan request. Hotels go via `lockedHotelId`. Traditional charger/hotel locks from EV Route mode are excluded when POI selections are present.
+
 ### Optional: POI Services v2 (`POST /corridor/query`)
 When **`POI_SERVICES_BASE_URL`** is set (sibling **POI Services** repo), the API loads **corridor chargers**, **hotels**, optional **`pairs`** (hotel↔DCFC for sleep meta), and optional **precomputed `edges`** from POI Services — the **runtime** source for that leg (see **[`docs/designs/data-plane-vs-application-plane-adr.md`](./designs/data-plane-vs-application-plane-adr.md)**, **[`docs/designs/poi-corridor-sleep-stops.md`](./designs/poi-corridor-sleep-stops.md)**, and **[`docs/designs/poi-route-overlay.md`](./designs/poi-route-overlay.md)**). Travel-Routing still runs **`planLeastTimeSegment`** here; POI does not choose the itinerary. **`debug.providerCalls.poi_services`** records HTTP time. **`POI_SERVICES_FALLBACK_TO_NREL`** defaults off (fail-closed); set `true` only for dev/legacy. On Synology Docker with **`prod-network`**, point the planner at **`http://poi:8010`** when the POI container is named **`poi`** (see **[`d1-runbook.md`](./d1-runbook.md)**).
 

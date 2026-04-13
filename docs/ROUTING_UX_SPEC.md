@@ -38,9 +38,17 @@ This document captures **product and UX decisions** for EV trip planning with **
 
 When the map is in **POI Select** mode, the existing EV itinerary overlays are hidden while the active route polyline remains visible. Users can filter corridor POIs by type, distance from the route, and charger network (charger network filtering applies only to `charger` or `all` mode; it is unavailable for `accommodation`).
 
-Selected POIs are highlighted on the map and added to a sidebar stop list. The UI does not replan automatically when POIs are selected; users explicitly tap **Recalculate Route** to convert selected POIs into ordered waypoints and trigger `POST /plan`.
+Selected POIs are highlighted on the map. The sidebar shows the candidate list with selected items sorted to the top. The UI does not replan automatically when POIs are selected; users switch to **EV Route** mode and click **Plan Trip** to convert selected POIs into ordered waypoints.
 
-Selected POI state persists across mode toggles. If the replan request fails, the app keeps the current selections and returns the user to POI Select mode with an error state so they can retry without losing progress.
+**POI fetch strategy:** Corridor POIs are fetched via `POST /corridor/pois`. The client splits long routes into ~150-mile sections (sampled at 1-mile spacing), queries each section in parallel with a per-segment limit (default **50**), and merges results by POI id client-side. This distributes results evenly across the full route rather than clustering near the origin.
+
+**Paired hotel+charger markers:** Hotels and chargers within 400 yards of each other are marked **dark red** in the POI Select map view — the same 400-yard threshold used by the EV-route candidate display to identify `hasNearbyCharger`.
+
+**Selected POI state persistence:**
+- Toggling to EV Route (POI mode → `"off"`) and back: candidates and selections are **preserved**.
+- Switching between POI types (e.g. Chargers → Hotels): candidates and selections are **cleared** so stale data cannot appear under a different filter.
+
+If the plan request fails while carrying POI selections, the app preserves selections and returns an error state so the user can retry without losing progress.
 
 *Implementation notes:* **`debug.sourceRouting`** carries **`sourceRoutingMode`** / **`effectiveSourceRoutingMode`** (both **`poi_only`**); legacy mirror snapshot fields were removed. Corridor sampling env: **`CORRIDOR_*`** (aliases include deprecated **`NREL_*`** names) — see **`TESTING.md`** and **`.env.example`**. On Synology Docker (**`prod-network`**), **`POI_SERVICES_BASE_URL=http://poi:8010`** — **[`d1-runbook.md`](./d1-runbook.md)**.
 

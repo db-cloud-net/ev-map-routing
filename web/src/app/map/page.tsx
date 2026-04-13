@@ -686,11 +686,12 @@ export default function MapPage() {
   const [poiMode, setPoiMode] = useState<PoiSelectMode>("off");
   const [poiNetwork, setPoiNetwork] = useState("");
   const [poiRadiusMi, setPoiRadiusMi] = useState("25");
-  const [poiLimit, setPoiLimit] = useState("120");
+  const [poiLimit, setPoiLimit] = useState("50");
   const [poiCandidates, setPoiCandidates] = useState<CorridorPoi[] | null>(null);
   const [poiSelection, setPoiSelection] = useState<Record<string, boolean>>({});
   const [poiFetching, setPoiFetching] = useState(false);
   const [poiError, setPoiError] = useState<string | null>(null);
+  const prevPoiModeRef = useRef<PoiSelectMode>("off");
   /** Slice 2: mid-journey replan — omit `start`, use coords or a stop from the last plan. */
   const [replanMode, setReplanMode] = useState<"off" | "coords" | "stopId">("off");
   const [replanLat, setReplanLat] = useState("35.7796");
@@ -802,8 +803,6 @@ export default function MapPage() {
     });
 
     map.addControl(new maplibregl.NavigationControl(), "top-right");
-    // Unblock marker effects immediately; style readiness still gates line-layer effects below.
-    setMapReady(true);
     map.once("load", () => {
       map.resize();
       setMapReady(true);
@@ -1533,12 +1532,17 @@ export default function MapPage() {
     poiMode
   ]);
 
-  // Clear POI candidate state when the mode changes so stale selections from a
-  // prior mode can't silently leak into subsequent plan submissions.
+  // Clear POI candidate state only when switching between two active (non-"off") POI
+  // types so stale candidates don't appear under a different filter. When toggling to
+  // "off" (EV Route) or back, preserve state so selections survive the round-trip.
   useEffect(() => {
-    setPoiCandidates(null);
-    setPoiSelection({});
-    setPoiError(null);
+    const prev = prevPoiModeRef.current;
+    prevPoiModeRef.current = poiMode;
+    if (prev !== "off" && poiMode !== "off" && prev !== poiMode) {
+      setPoiCandidates(null);
+      setPoiSelection((cur) => (Object.keys(cur).length === 0 ? cur : {}));
+      setPoiError(null);
+    }
   }, [poiMode]);
 
   useEffect(() => {
@@ -1552,8 +1556,25 @@ export default function MapPage() {
     poiMarkersRef.current = [];
     if (!poiCandidates || !poiCandidates.length || poiMode === "off") return;
 
+    // Identify paired hotel+charger within 400 yards — same algorithm as EV-route view.
+    const PAIR_THRESHOLD_MI = 400 / 1760;
+    const poiHotels = poiCandidates.filter((p) => p.poi_type === "accommodation");
+    const poiChargers = poiCandidates.filter((p) => p.poi_type === "charger");
+    const pairedPoiIds = new Set<string>();
+    for (const h of poiHotels) {
+      for (const c of poiChargers) {
+        if (haversineMiles({ lat: h.lat, lon: h.lon }, { lat: c.lat, lon: c.lon }) <= PAIR_THRESHOLD_MI) {
+          pairedPoiIds.add(h.id);
+          pairedPoiIds.add(c.id);
+        }
+      }
+    }
+
     for (const poi of poiCandidates) {
-      const color = poi.poi_type === "charger" ? COLORS.dcfcTeal : COLORS.hotelLightOrange;
+      const isPaired = pairedPoiIds.has(poi.id);
+      const color = isPaired
+        ? COLORS.sleepDarkRed
+        : poi.poi_type === "charger" ? COLORS.dcfcTeal : COLORS.hotelLightOrange;
       const selected = Boolean(poiSelection[poi.id]);
       const marker = new maplibregl.Marker({ element: poiCandidateMarkerElement(selected, color) })
         .setLngLat([poi.lon, poi.lat])
@@ -1641,42 +1662,100 @@ export default function MapPage() {
     }
 
     const radius = Number(poiRadiusMi);
-    const limit = Number(poiLimit);
+    const perSectionLimit = Math.max(1, Math.round(Number(poiLimit)));
     if (!Number.isFinite(radius) || radius <= 0) {
       setPoiError("Enter a valid corridor radius in miles.");
       return;
     }
-    if (!Number.isFinite(limit) || limit <= 0) {
-      setPoiError("Enter a valid POI result limit.");
+    if (!Number.isFinite(perSectionLimit) || perSectionLimit < 1) {
+      setPoiError("Enter a valid per-segment limit (minimum 1).");
       return;
     }
 
     setPoiFetching(true);
     try {
-      const shape = await getRoutePreviewShape();
-      const body: Record<string, unknown> = {
-        shape,
-        corridor_radius_mi: radius,
-        poi_type: poiMode,
-        limit
-      };
-      if (poiMode === "charger" && poiNetwork.trim()) {
-        body.network = poiNetwork.trim();
+      const rawShape = await getRoutePreviewShape();
+      // Valhalla polylines cluster points in complex urban areas and spread thin on highways.
+      // Use distance-based sampling: one point per mile for uniform geographic coverage.
+      const MIN_SPACING_MI = 1;
+      const sampledShape = (() => {
+        if (rawShape.length <= 2) return rawShape;
+        const out: typeof rawShape = [rawShape[0]];
+        let last = rawShape[0];
+        for (let i = 1; i < rawShape.length - 1; i++) {
+          if (haversineMiles(last, rawShape[i]) >= MIN_SPACING_MI) {
+            out.push(rawShape[i]);
+            last = rawShape[i];
+          }
+        }
+        out.push(rawShape[rawShape.length - 1]);
+        return out;
+      })();
+
+      // The POI service fills `limit` from the nearest points at the start of the shape,
+      // so a single query for a long route returns everything near the origin and nothing
+      // near the destination. Fix: split the route into ~150-mile sections, query each in
+      // parallel with a per-section limit, then deduplicate by id.
+      const SECTION_MI = 150;
+      const sections: Array<typeof sampledShape> = [];
+      let secStart = 0;
+      let accumulated = 0;
+      for (let i = 1; i < sampledShape.length; i++) {
+        accumulated += haversineMiles(sampledShape[i - 1], sampledShape[i]);
+        if (accumulated >= SECTION_MI || i === sampledShape.length - 1) {
+          sections.push(sampledShape.slice(secStart, i + 1));
+          secStart = i;
+          accumulated = 0;
+        }
       }
+      if (sections.length === 0) sections.push(sampledShape);
+
+      // perSectionLimit is resolved above from poiLimit — used directly, not divided by section count.
       const url = `${apiBase.replace(/\/$/, "")}/corridor/pois`;
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-      const json = (await resp.json().catch(() => null)) as
-        | { status: "ok"; pois: CorridorPoi[] }
-        | { status?: string; message?: string };
-      if (!resp.ok || json.status !== "ok" || !Array.isArray((json as any).pois)) {
-        setPoiError((json as { message?: string }).message ?? "Failed to fetch corridor POIs.");
+
+      const sectionResults = await Promise.all(
+        sections.map(async (shape) => {
+          const body: Record<string, unknown> = {
+            shape,
+            corridor_radius_mi: radius,
+            poi_type: poiMode,
+            limit: perSectionLimit
+          };
+          if (poiMode === "charger" && poiNetwork.trim()) {
+            body.network = poiNetwork.trim();
+          }
+          const resp = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+          });
+          const json = (await resp.json().catch(() => null)) as
+            | { status: "ok"; pois: CorridorPoi[] }
+            | { status?: string; message?: string };
+          if (!resp.ok || json.status !== "ok" || !Array.isArray((json as any).pois)) {
+            throw new Error((json as { message?: string }).message ?? "Failed to fetch corridor POIs.");
+          }
+          return (json as { pois: CorridorPoi[] }).pois;
+        })
+      );
+
+      // Deduplicate by id across sections, preserving order.
+      const seen = new Set<string>();
+      const merged: CorridorPoi[] = [];
+      for (const batch of sectionResults) {
+        for (const poi of batch) {
+          if (!seen.has(poi.id)) {
+            seen.add(poi.id);
+            merged.push(poi);
+          }
+        }
+      }
+
+      if (merged.length === 0) {
+        setPoiError("No POIs found along this corridor.");
         return;
       }
-      setPoiCandidates((json as { pois: CorridorPoi[] }).pois);
+      setPoiCandidates(merged);
     } catch (err) {
       setPoiError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2573,8 +2652,8 @@ export default function MapPage() {
                 style={{ width: "100%", padding: 8 }}
               >
                 <option value="">— select stop —</option>
-                {(plan?.stops ?? []).map((s) => (
-                  <option key={s.id} value={s.id}>
+                {(plan?.stops ?? []).map((s, idx) => (
+                  <option key={`${s.id}-${idx}`} value={s.id}>
                     {s.type}: {s.name} ({s.id})
                   </option>
                 ))}
@@ -2746,7 +2825,7 @@ export default function MapPage() {
                   />
                 </label>
                 <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                  <div>Result limit</div>
+                  <div>Per segment</div>
                   <input
                     value={poiLimit}
                     onChange={(e) => setPoiLimit(e.target.value)}
@@ -2772,7 +2851,13 @@ export default function MapPage() {
                     checkboxes to select.
                   </div>
                   <div style={{ display: "grid", gap: 6, maxHeight: 220, overflow: "auto" }}>
-                    {poiCandidates.map((poi) => {
+                    {[...poiCandidates]
+                      .sort((a, b) => {
+                        const as = Boolean(poiSelection[a.id]);
+                        const bs = Boolean(poiSelection[b.id]);
+                        return as === bs ? 0 : as ? -1 : 1;
+                      })
+                      .map((poi) => {
                       const selected = Boolean(poiSelection[poi.id]);
                       return (
                         <label
@@ -2846,6 +2931,7 @@ export default function MapPage() {
                 [
                   { label: "Hotel", color: COLORS.hotelLightOrange },
                   { label: "Hotel + nearby charger", color: COLORS.hotelDarkOrange },
+                  { label: "POI paired (hotel+charger ≤400 yd)", color: COLORS.sleepDarkRed },
                   {
                     label: "Sleep hotel (no charger)",
                     color: COLORS.sleepHotelBrightBlue,
@@ -3253,8 +3339,8 @@ export default function MapPage() {
               );
             })()}
             <ol style={{ marginTop: 10 }}>
-              {plan.stops.map((s) => (
-                <li key={s.id}>
+              {plan.stops.map((s, idx) => (
+                <li key={`${s.id}-${idx}`}>
                   <strong>{s.type}</strong> —{" "}
                   {s.type === "sleep" && (s.meta as any)?.chargerFound
                     ? `${s.name} (EV charger: ${(s.meta as any)?.chargerName ?? "nearby"})`
