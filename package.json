@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "qa:smoke": "node scripts/qa-smoke-all.mjs",
+    "qa:smoke:ci": "node scripts/qa-smoke-ci.mjs",
     "poi:review-summary": "node scripts/poi-review-log-summary.mjs"
   },
   "devDependencies": {

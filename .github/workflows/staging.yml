@@ -30,12 +30,10 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
-      # Note: qa:smoke runs `npm -w api run build` internally as its first step — no need to duplicate here.
-      - name: Smoke tests
-        run: npm run qa:smoke
-
-      - name: Unit tests
-        run: npm test
+      # qa:smoke:ci runs compile + unit tests + CORS + log-contract.
+      # Full qa:smoke (plan/route/candidates E2E) requires Valhalla — run locally or on staging.
+      - name: CI smoke
+        run: npm run qa:smoke:ci
 
   # ─────────────────────────────────────────────
   # Job 2: Build + push image to GHCR
