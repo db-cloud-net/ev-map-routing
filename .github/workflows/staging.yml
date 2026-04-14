@@ -96,6 +96,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u db-cloud-net --password-stdin
+
       - name: Pull latest images
         run: docker compose -f docker-compose.stage.yml pull
 
