@@ -133,6 +133,7 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 
 ---
 
+
 ### Staging smoke test — live URL
 
 **What:** A CI step in the deploy job that calls `POST /plan` against the live staging API URL and asserts a valid route returns (Charlotte NC → Raleigh NC).

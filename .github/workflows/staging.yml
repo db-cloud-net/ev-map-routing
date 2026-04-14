@@ -67,6 +67,7 @@ jobs:
           push: true
           build-args: |
             NEXT_PUBLIC_API_BASE=${{ secrets.STAGE_API_URL }}
+            NEXT_PUBLIC_PLAN_USE_JOB=true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-stage
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-stage
