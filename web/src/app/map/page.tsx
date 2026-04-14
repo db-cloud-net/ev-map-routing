@@ -1772,6 +1772,11 @@ export default function MapPage() {
     const candidatesGen = ++candidatesRequestGenRef.current;
     const routePreviewGen = ++routePreviewRequestGenRef.current;
     let pendingFailsafeTimer: number | undefined;
+    const previewChain =
+      replanMode === "off" ? routePreviewSegmentChain(start, parsedWaypoints, end) : [];
+    const shouldPrefetchPreview =
+      prefetchRoutePreview && replanMode === "off" && previewChain.length >= 2;
+    let routePreviewWasSet = false;
     try {
       const apiUrl = `${apiBase.replace(/\/$/, "")}/plan`;
       const candidatesUrl = `${apiBase.replace(/\/$/, "")}/candidates`;
@@ -1863,10 +1868,6 @@ export default function MapPage() {
           });
       }
 
-      const previewChain =
-        replanMode === "off" ? routePreviewSegmentChain(start, wps, end) : [];
-      const shouldPrefetchPreview =
-        prefetchRoutePreview && replanMode === "off" && previewChain.length >= 2;
       setRoutePreviewPending(shouldPrefetchPreview);
 
       const routePreviewTimeoutMs = routePreviewClientTimeoutMs();
@@ -1877,6 +1878,7 @@ export default function MapPage() {
         shouldPrefetchPreview
           ? fetchMergedRoutePreview(apiBase, previewChain, routePreviewAbort, (partial) => {
             if (routePreviewGen !== routePreviewRequestGenRef.current) return;
+            routePreviewWasSet = true;
             setRoutePreview(partial);
             setRoutePreviewPending(false);
           })
@@ -1892,7 +1894,10 @@ export default function MapPage() {
         .then((previewJson) => {
           if (routePreviewGen !== routePreviewRequestGenRef.current) return;
           /** Only apply successful merges; never clear here — a late `null` after partials must not wipe the map. */
-          if (previewJson) setRoutePreview(previewJson);
+          if (previewJson) {
+            routePreviewWasSet = true;
+            setRoutePreview(previewJson);
+          }
         })
         .catch(() => {
           /* ignore */
@@ -2330,6 +2335,21 @@ export default function MapPage() {
       if (pendingFailsafeTimer !== undefined) window.clearTimeout(pendingFailsafeTimer);
       if (timer !== undefined) window.clearTimeout(timer);
       setLoading(false);
+      /**
+       * Fallback: if the prefetch route-preview never resolved (e.g. Cloudflare dropped the request
+       * while the async plan job was running), fetch it now so the map draws a road line instead of
+       * a straight chord once the plan is displayed.
+       */
+      if (!routePreviewWasSet && shouldPrefetchPreview && previewChain.length >= 2) {
+        void fetchMergedRoutePreview(apiBase, previewChain, null, (partial) => {
+          if (routePreviewGen !== routePreviewRequestGenRef.current) return;
+          setRoutePreview(partial);
+        }).then((result) => {
+          if (result && routePreviewGen === routePreviewRequestGenRef.current) {
+            setRoutePreview(result);
+          }
+        }).catch(() => { /* ignore */ });
+      }
     }
   }
 
