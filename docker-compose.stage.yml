@@ -55,7 +55,11 @@ services:
     # Build and push this image manually or via POI Services CI.
     # One-time: docker build -t ghcr.io/db-cloud-net/poi-services:latest /path/to/poi-repo
     #           docker push ghcr.io/db-cloud-net/poi-services:latest
+    # Data: snapshot from production via:
+    #   cp -r /volume1/docker/poi-services/poi_data /volume1/docker/poi-services-stage/poi_data
     image: ghcr.io/db-cloud-net/poi-services:latest
+    volumes:
+      - /volume1/docker/poi-services-stage/poi_data:/data
     networks:
       - stage-network
     restart: unless-stopped
