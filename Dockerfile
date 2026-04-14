@@ -9,6 +9,11 @@ COPY api/package.json api/package.json
 RUN npm install --no-audit --no-fund
 
 FROM base AS build
+# NEXT_PUBLIC_* vars are baked into the Next.js bundle at build time.
+# Pass --build-arg NEXT_PUBLIC_API_BASE=https://... when building for a specific environment.
+ARG NEXT_PUBLIC_API_BASE
+ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
+COPY shared ./shared
 COPY web ./web
 COPY api ./api
 RUN npm run build

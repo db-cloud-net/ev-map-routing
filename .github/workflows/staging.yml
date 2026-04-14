@@ -1,0 +1,123 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/ev-routing
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Job 1: P0 gate — compile + smoke tests
+  # Runs on GitHub-hosted runner; uses mocks (no Docker/NAS needed).
+  # ─────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: API compile
+        run: npm -w api run build
+
+      - name: Smoke tests
+        run: npm run qa:smoke
+
+      - name: Unit tests
+        run: npm test
+
+  # ─────────────────────────────────────────────
+  # Job 2: Build + push image to GHCR
+  # Bakes NEXT_PUBLIC_API_BASE for staging into the image.
+  # ─────────────────────────────────────────────
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_BASE=${{ secrets.STAGE_API_URL }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-stage
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-stage
+          # Layer cache stored in GHCR — keeps image build fast on subsequent pushes
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-stage
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-stage,mode=max
+
+  # ─────────────────────────────────────────────
+  # Job 3: Deploy to NAS staging environment
+  # Runs on the self-hosted runner (inside the NAS).
+  # Prerequisites: stage-network created, Valhalla tiles in place, POI image available.
+  # See docs/d1-runbook.md § Staging for one-time setup steps.
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy staging
+    runs-on: self-hosted
+    needs: build
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull latest images
+        run: docker compose -f docker-compose.stage.yml pull
+
+      - name: Deploy staging stack
+        env:
+          STAGE_WEB_URL: ${{ secrets.STAGE_WEB_URL }}
+          STAGE_API_URL: ${{ secrets.STAGE_API_URL }}
+          EV_ROUTING_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-stage
+        run: docker compose -f docker-compose.stage.yml up -d --remove-orphans
+
+      - name: Wait for API health check
+        run: |
+          echo "Waiting for staging API to be healthy..."
+          for i in $(seq 1 12); do
+            if curl -sf "${{ secrets.STAGE_API_URL }}/health" > /dev/null 2>&1; then
+              echo "✓ Staging API healthy"
+              exit 0
+            fi
+            echo "Attempt $i/12 — retrying in 5s..."
+            sleep 5
+          done
+          echo "✗ Staging API did not become healthy within 60s"
+          docker compose -f docker-compose.stage.yml logs stage-api --tail=50
+          exit 1

@@ -1,0 +1,78 @@
+# Staging stack — runs on stage-network on the NAS.
+#
+# One-time NAS setup (see docs/d1-runbook.md § Staging):
+#   docker network create stage-network
+#   mkdir -p /volume1/docker/valhalla-stage/tiles   # then copy tiles via Z: drive
+#
+# GitHub Secrets required (Settings → Secrets → Actions):
+#   STAGE_API_URL   — e.g. https://stage-api.yourdomain.com
+#   STAGE_WEB_URL   — e.g. https://stage.yourdomain.com
+#
+# POI Services image: ghcr.io/db-cloud-net/poi-services:latest
+#   Build and push once manually, then automate via POI Services CI.
+#   See docs/d1-runbook.md § Staging → POI Services image.
+
+services:
+  stage-web:
+    image: ${EV_ROUTING_IMAGE:-ghcr.io/db-cloud-net/ev-routing:latest-stage}
+    environment:
+      SERVICE: web
+      NODE_ENV: production
+    networks:
+      - stage-network
+    restart: unless-stopped
+    # NEXT_PUBLIC_API_BASE is baked into the image at build time (not an env var here).
+    # Cloudflare tunnel routes stage.yourdomain.com → this container port 3000.
+    expose:
+      - "3000"
+
+  stage-api:
+    image: ${EV_ROUTING_IMAGE:-ghcr.io/db-cloud-net/ev-routing:latest-stage}
+    environment:
+      SERVICE: api
+      NODE_ENV: production
+      PORT: "3001"
+      DEPLOYMENT_ENV: staging
+      # CORS: allow requests from the staging web app
+      CORS_ORIGIN: ${STAGE_WEB_URL}
+      # POI Services — internal Docker DNS
+      POI_SERVICES_BASE_URL: http://stage-poi:8010
+      # Valhalla — internal Docker DNS
+      VALHALLA_BASE_URL: http://stage-valhalla:8002
+    networks:
+      - stage-network
+    restart: unless-stopped
+    # Cloudflare tunnel routes stage-api.yourdomain.com → this container port 3001.
+    expose:
+      - "3001"
+    depends_on:
+      - stage-poi
+      - stage-valhalla
+
+  stage-poi:
+    # Build and push this image manually or via POI Services CI.
+    # One-time: docker build -t ghcr.io/db-cloud-net/poi-services:latest /path/to/poi-repo
+    #           docker push ghcr.io/db-cloud-net/poi-services:latest
+    image: ghcr.io/db-cloud-net/poi-services:latest
+    networks:
+      - stage-network
+    restart: unless-stopped
+    expose:
+      - "8010"
+
+  stage-valhalla:
+    # Standard Valhalla image. Tiles must be pre-built and placed in the volume path below.
+    # Copy tiles to NAS via Z: drive: Z:\valhalla-stage\tiles\
+    # (Z: maps to /volume1/docker on the NAS — adjust if your mapping differs)
+    image: ghcr.io/gis-ops/docker-valhalla/valhalla:3.5.1
+    volumes:
+      - /volume1/docker/valhalla-stage/tiles:/data/valhalla:ro
+    networks:
+      - stage-network
+    restart: unless-stopped
+    expose:
+      - "8002"
+
+networks:
+  stage-network:
+    external: true

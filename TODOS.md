@@ -36,6 +36,35 @@
 6. ~~**`/plan` job + poll**~~ — **shipped** (`POST /plan` **`planJob`**, **`GET /plan/jobs/:id`**, web **`NEXT_PUBLIC_PLAN_USE_JOB`**).
 7. ~~**Map + geometry (debug)**~~ — **shipped:** optional **`NEXT_PUBLIC_MAP_DEBUG_RANGE_LEGS`** split of merged preview by **`rangeLegs`** + debug sidebar (**not** standard product UI). ~~**Map + planJob partial UX**~~ — **shipped (2026):** refinement stage 3 stays active during partial checkpoints; green callout + button/status copy (**`NEXT_PUBLIC_PLAN_USE_JOB`**). ~~**Pillar 2** stream/SSE transport~~ — **shipped** (SSE/NDJSON, heartbeats, client reconnect). ~~**Pillar 3** (3a–c)~~ — **shipped** (checkpoint count UI, partial **`legs`** geometry vs preview, Debug **`liveCheckpoints`** copy). **Next:** **§4 refinement loops** (above) · then **`rangeLegs`** road geometry on map / **Pillar 1** per ADR when prioritized.
 
+### First consumer application (plan-eng-review 2026-04-13)
+
+**Goal:** Productize the web UI as the first app on the EV routing platform. The API becomes a shared platform; future apps (mobile, CLI, embedded widget) are anticipated.
+
+**Scope (agreed):**
+- `web/src/components/MapCanvas.tsx` — extract MapLibre init + layer management; shared by `/map` (dev tool) and `/trip` (consumer app)
+- `shared/api-client.ts` — typed fetch wrappers: `planTrip()`, `getCandidates()`, `getRoutePreview()`; lives in `shared/` so non-web clients can import it
+- `web/src/app/trip/page.tsx` — new consumer-facing route; clean UI, no debug panel, uses MapCanvas + api-client
+- `api/src/server.ts` — change `CORS_ORIGIN` from single string to comma-separated allowlist
+- `shared/api-client.test.ts` + Vitest config — unit tests for error paths; E2E smoke for `/trip`
+
+**Deferred (captured as TODOs below):**
+- URL state (`?from=&to=`) for shareable trips
+- `planTripJob()` SSE streaming in api-client
+
+**Failure modes to handle in implementation:**
+- MapCanvas: WebGL unavailable → add `map.on('error', ...)` and show "Map unavailable" message (currently silent)
+- MapCanvas: stable `useRef` pattern required — do NOT remount map on plan re-renders (map goes blank)
+
+**Exit criteria:**
+- `Charlotte NC → Raleigh NC` plans successfully on `/trip` with route on map
+- `/map` dev tool unchanged (regression test)
+- CORS allowlist: two origins allowed, third rejected (extend `e2e-cors-functional.mjs`)
+- `npm run qa:smoke` green
+
+**Deferred — URL state for `/trip`:** Add `?from=&to=` URL params so trips are shareable and bookmarkable. Low complexity once the page exists. Start: read params on load, auto-submit if both present; on submit, `pushState`. Depends on: `/trip` page being stable.
+
+**Deferred — SSE streaming in `shared/api-client`:** Extend with `planTripJob(req, onCheckpoint)` that handles SSE events and checkpoint callbacks. The consumer app will eventually want progressive route updates while planning. Depends on: `/trip` page v1 stable and blocking POST /plan proven. Reference: existing SSE pattern in `page.tsx` + `docs/WEB_SWITCHES.md`.
+
 ### Build & test priority (rolling)
 
 Use this order when choosing what to run or build next. **Higher = do sooner; lower = roadmap / on-demand.**
@@ -71,6 +100,50 @@ Use this order when choosing what to run or build next. **Higher = do sooner; lo
 - **Phase 3:** **`npm run qa:smoke`** covers API build + fast E2E; **`browse.exe`** / UI under WSL may still need **Bun CLI** fallback (documented in **`TESTING.md`**).
 - **Overnight E2E:** HIE scenario is reliable when run with **`SPAWN_SERVER=true`** (per-case env); smoke-only run against a long-running dev API can **false-fail** (documented in **`TESTING.md`**).
 - **~~NREL / Overpass / mirror removal~~** — shipped; see **deprecate-nrel-overpass-mirror** ADR.
+
+---
+
+## Infrastructure (CI / deploy)
+
+### Production deployment pipeline
+
+**What:** GitHub Actions workflow for prod deploy, mirroring the staging pipeline.
+
+**Why:** Closes the last manual step before releases are repeatable — no more `docker compose up` by hand on the NAS.
+
+**Context:** Staging CI ships 2026-04-13 (push to main → build → deploy to stage-network). Prod pipeline is the same pattern targeting prod-network with `PROD_API_URL` / `PROD_WEB_URL` GitHub Secrets and a GitHub Environment with required-reviewer approval gate. See `.github/workflows/staging.yml` as the template.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** Staging pipeline validated on NAS at least once
+
+---
+
+### POI Services CI — auto-publish image
+
+**What:** Add a GitHub Actions workflow to the POI Services repo that builds and pushes `ghcr.io/db-cloud-net/poi-services:latest` on push to main.
+
+**Why:** Stage-poi currently uses a manually pushed image. Without automation, POI code changes don't reach staging until someone remembers to push.
+
+**Context:** Staging compose references `ghcr.io/db-cloud-net/poi-services:latest`. Manual push procedure is documented in `docs/d1-runbook.md` § Staging → POI Services image. Add a `docker/build-push-action@v5` workflow in the POI Services repo's `.github/workflows/publish.yml`.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** POI Services repo, GHCR package permissions
+
+---
+
+### Staging smoke test — live URL
+
+**What:** A CI step in the deploy job that calls `POST /plan` against the live staging API URL and asserts a valid route returns (Charlotte NC → Raleigh NC).
+
+**Why:** The current post-deploy health check only proves the API started. A live smoke test proves Valhalla + POI are wired correctly end-to-end — the class of failures mocks can't catch.
+
+**Context:** Add a 4th step to the `deploy` job in `.github/workflows/staging.yml`. Write a short script (similar to `scripts/e2e-plan-functional.mjs`) that hits `$STAGE_API_URL` directly (no server spawn). Should run within 60s.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** Staging stack validated manually at least once first
 
 ---
 
