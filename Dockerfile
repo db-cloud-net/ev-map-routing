@@ -13,6 +13,7 @@ FROM base AS build
 # Pass --build-arg NEXT_PUBLIC_API_BASE=https://... when building for a specific environment.
 ARG NEXT_PUBLIC_API_BASE
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
+COPY tsconfig.base.json ./
 COPY shared ./shared
 COPY web ./web
 COPY api ./api
