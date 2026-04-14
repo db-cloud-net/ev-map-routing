@@ -82,6 +82,31 @@ function stopProc(proc) {
   }
 }
 
+/**
+ * Send SIGTERM and wait for the process to fully exit (or SIGKILL after 5s).
+ * This ensures the port is released before the next scenario starts.
+ */
+async function stopAndWait(proc) {
+  if (!proc) return;
+  const done = new Promise((resolve) => {
+    proc.on("exit", resolve);
+    proc.on("error", resolve);
+  });
+  try {
+    proc.kill("SIGTERM");
+  } catch {
+    // ignore — already dead
+  }
+  // Give SIGTERM up to 5s; force-kill if it lingers.
+  const timeout = setTimeout(() => {
+    try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+  }, 5000);
+  await done;
+  clearTimeout(timeout);
+  // Brief OS pause to ensure the port binding is fully released.
+  await sleepMs(100);
+}
+
 function startServer({ overrides }) {
   killListenersOnPort(API_PORT, { verbose: process.env.E2E_VERBOSE === "1" });
   // Ensure dist exists (server.ts -> dist/api/src/server.js).
@@ -139,9 +164,7 @@ async function checkScenario({ name, overrides, origin, expectedAllowOrigin }) {
       );
     }
   } finally {
-    stopProc(proc);
-    // Give the OS a moment to release the port for the next scenario.
-    await sleepMs(250);
+    await stopAndWait(proc);
   }
 }
 
