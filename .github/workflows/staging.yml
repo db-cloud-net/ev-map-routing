@@ -16,6 +16,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      # Limit Node.js heap per process to reduce peak memory across concurrent tsc + server spawns
+      NODE_OPTIONS: "--max-old-space-size=3072"
     steps:
       - uses: actions/checkout@v4
 
@@ -27,9 +30,7 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
-      - name: API compile
-        run: npm -w api run build
-
+      # Note: qa:smoke runs `npm -w api run build` internally as its first step — no need to duplicate here.
       - name: Smoke tests
         run: npm run qa:smoke
 
