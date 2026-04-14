@@ -59,15 +59,17 @@ function stopsToFeatures(stops: ItineraryStop[]): StopFeatureCollection {
   };
 }
 
-function planToRouteCoords(plan: PlanTripResponse): [number, number][] {
+function planToRoadCoords(plan: PlanTripResponse): [number, number][] {
   const coords: [number, number][] = [];
   for (const leg of plan.legs ?? []) {
     if (leg.geometry?.type === "LineString") {
       for (const c of leg.geometry.coordinates) coords.push([c[0], c[1]]);
     }
   }
-  if (coords.length >= 2) return coords;
-  // fall back to stop chord
+  return coords;
+}
+
+function planToChordCoords(plan: PlanTripResponse): [number, number][] {
   return (plan.stops ?? [])
     .filter((s) => toNum(s.coords?.lat) !== null && toNum(s.coords?.lon) !== null)
     .map((s) => [Number(s.coords.lon), Number(s.coords.lat)]);
@@ -178,14 +180,29 @@ export default function TripPage() {
     [from, to]
   );
 
-  // Derive map props from current state
-  const routeCoords: [number, number][] =
-    plan?.status === "ok" ? planToRouteCoords(plan) : [];
+  // Derive map props from current state.
+  // Priority: actual leg road geometry > route-preview polyline > stop chord.
+  // Route-preview is shown as a dashed line during loading, and folded into
+  // routeCoords (solid line) after the plan completes when leg geometry is absent.
+  const planRoadCoords: [number, number][] =
+    plan?.status === "ok" ? planToRoadCoords(plan) : [];
 
-  const routePreviewCoords: [number, number][] =
-    routeCoords.length < 2 && routePreview?.status === "ok"
+  const previewPolyCoords: [number, number][] =
+    routePreview?.status === "ok"
       ? (routePreview.preview?.polyline?.coordinates as [number, number][] | undefined) ?? []
       : [];
+
+  const routeCoords: [number, number][] = (() => {
+    if (plan?.status !== "ok") return [];
+    if (planRoadCoords.length >= 2) return planRoadCoords;
+    // Prefer road-following route-preview over straight chord
+    if (previewPolyCoords.length >= 2) return previewPolyCoords;
+    return planToChordCoords(plan);
+  })();
+
+  // Dashed preview shown during loading only (before plan arrives)
+  const routePreviewCoords: [number, number][] =
+    !plan && previewPolyCoords.length >= 2 ? previewPolyCoords : [];
 
   const stopFeatures: StopFeatureCollection | null =
     plan?.status === "ok" && (plan.stops?.length ?? 0) > 0
