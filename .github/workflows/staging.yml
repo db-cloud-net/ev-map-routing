@@ -17,8 +17,8 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     env:
-      # Limit Node.js heap per process to reduce peak memory across concurrent tsc + server spawns
-      NODE_OPTIONS: "--max-old-space-size=3072"
+      # qa:smoke builds once (first step). Skip per-scenario rebuilds in e2e-cors-functional.mjs.
+      E2E_SKIP_BUILD: "1"
     steps:
       - uses: actions/checkout@v4
 

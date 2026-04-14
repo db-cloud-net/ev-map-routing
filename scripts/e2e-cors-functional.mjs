@@ -84,8 +84,11 @@ function stopProc(proc) {
 
 function startServer({ overrides }) {
   killListenersOnPort(API_PORT, { verbose: process.env.E2E_VERBOSE === "1" });
-  // Ensure dist exists (server.ts -> dist/api/src/server.js)
-  execSync("npm -w api run build", { stdio: "inherit" });
+  // Ensure dist exists (server.ts -> dist/api/src/server.js).
+  // Skip when E2E_SKIP_BUILD=1 (CI: qa:smoke already built once before running scenarios).
+  if (process.env.E2E_SKIP_BUILD !== "1") {
+    execSync("npm -w api run build", { stdio: "inherit" });
+  }
 
   const serverEntry = "api/dist/api/src/server.js";
   const proc = spawn("node", [serverEntry], {
