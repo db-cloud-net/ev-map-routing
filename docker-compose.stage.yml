@@ -2,7 +2,7 @@
 #
 # One-time NAS setup (see docs/d1-runbook.md § Staging):
 #   docker network create stage-network
-#   mkdir -p /volume1/docker/valhalla-stage/tiles   # then copy tiles via Z: drive
+#   docker network connect stage-network valhalla   # share prod Valhalla with staging
 #
 # GitHub Secrets required (Settings → Secrets → Actions):
 #   STAGE_API_URL   — e.g. https://stage-api.yourdomain.com
@@ -39,8 +39,9 @@ services:
       CORS_ORIGIN: ${STAGE_WEB_URL}
       # POI Services — internal Docker DNS
       POI_SERVICES_BASE_URL: http://stage-poi:8010
-      # Valhalla — internal Docker DNS
-      VALHALLA_BASE_URL: http://stage-valhalla:8002
+      # Valhalla — reuse production container (connected to stage-network via:
+      #   docker network connect stage-network valhalla)
+      VALHALLA_BASE_URL: http://valhalla:8002
     networks:
       - stage-network
     restart: unless-stopped
@@ -49,7 +50,6 @@ services:
       - "3001"
     depends_on:
       - stage-poi
-      - stage-valhalla
 
   stage-poi:
     # Build and push this image manually or via POI Services CI.
@@ -65,19 +65,6 @@ services:
     restart: unless-stopped
     expose:
       - "8010"
-
-  stage-valhalla:
-    # Standard Valhalla image. Tiles must be pre-built and placed in the volume path below.
-    # Copy tiles to NAS via Z: drive: Z:\valhalla-stage\tiles\
-    # (Z: maps to /volume1/docker on the NAS — adjust if your mapping differs)
-    image: ghcr.io/gis-ops/docker-valhalla/valhalla:3.5.1
-    volumes:
-      - /volume1/docker/valhalla-stage/tiles:/custom_files
-    networks:
-      - stage-network
-    restart: unless-stopped
-    expose:
-      - "8002"
 
 networks:
   stage-network:
