@@ -72,7 +72,7 @@ services:
     # (Z: maps to /volume1/docker on the NAS — adjust if your mapping differs)
     image: ghcr.io/gis-ops/docker-valhalla/valhalla:3.5.1
     volumes:
-      - /volume1/docker/valhalla-stage/tiles:/custom_files:ro
+      - /volume1/docker/valhalla-stage/tiles:/custom_files
     networks:
       - stage-network
     restart: unless-stopped
