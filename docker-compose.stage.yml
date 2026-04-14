@@ -44,6 +44,7 @@ services:
       VALHALLA_BASE_URL: http://valhalla:8002
     networks:
       - stage-network
+      - prod-network
     restart: unless-stopped
     # Cloudflare tunnel routes stage-api.yourdomain.com → this container port 3001.
     expose:
@@ -68,4 +69,6 @@ services:
 
 networks:
   stage-network:
+    external: true
+  prod-network:
     external: true
