@@ -33,6 +33,8 @@ services:
       NODE_ENV: production
       PORT: "3001"
       DEPLOYMENT_ENV: staging
+      # Disable dev-only port-freeing (lsof/kill -9) — not needed in staging containers.
+      API_FREE_PORT_BEFORE_LISTEN: "false"
       # CORS: allow requests from the staging web app
       CORS_ORIGIN: ${STAGE_WEB_URL}
       # POI Services — internal Docker DNS
