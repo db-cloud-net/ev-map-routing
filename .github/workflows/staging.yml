@@ -85,6 +85,13 @@ jobs:
     runs-on: self-hosted
     needs: build
     environment: staging
+    permissions:
+      contents: read
+      packages: read
+    env:
+      STAGE_WEB_URL: ${{ secrets.STAGE_WEB_URL }}
+      STAGE_API_URL: ${{ secrets.STAGE_API_URL }}
+      EV_ROUTING_IMAGE: ghcr.io/db-cloud-net/ev-routing:latest-stage
 
     steps:
       - uses: actions/checkout@v4
@@ -100,10 +107,6 @@ jobs:
         run: docker compose -f docker-compose.stage.yml pull
 
       - name: Deploy staging stack
-        env:
-          STAGE_WEB_URL: ${{ secrets.STAGE_WEB_URL }}
-          STAGE_API_URL: ${{ secrets.STAGE_API_URL }}
-          EV_ROUTING_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-stage
         run: docker compose -f docker-compose.stage.yml up -d --remove-orphans
 
       - name: Wait for API health check
